@@ -15,10 +15,9 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use ama_core::{now_ms, Inbox, LiveEvent, MessageCard, Status};
+use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, RelayChoice, Status};
 use clap::{Parser, Subcommand};
 use futures_lite::StreamExt;
-use iroh::{endpoint::presets, Endpoint};
 use qrcode::{render::unicode, QrCode};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -36,6 +35,10 @@ enum Command {
         /// Human-readable device label (stamped into state writes).
         #[arg(long, default_value = "device")]
         name: String,
+        /// Self-hosted relay URL (e.g. https://relay.example.com). Defaults to
+        /// n0's public relays when omitted.
+        #[arg(long)]
+        relay: Option<String>,
     },
     /// Join an existing inbox using a ticket from `create`.
     Join {
@@ -43,6 +46,9 @@ enum Command {
         ticket: String,
         #[arg(long, default_value = "device")]
         name: String,
+        /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
+        #[arg(long)]
+        relay: Option<String>,
     },
 }
 
@@ -51,16 +57,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let inbox = match cli.cmd {
-        Command::Create { name } => {
-            let endpoint = Endpoint::bind(presets::N0).await.context("bind endpoint")?;
+        Command::Create { name, relay } => {
+            let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
             let inbox = Inbox::create(endpoint, name).await?;
             let ticket = inbox.ticket().await?;
             print_ticket(&ticket.to_string());
             Arc::new(inbox)
         }
-        Command::Join { ticket, name } => {
+        Command::Join { ticket, name, relay } => {
             let ticket = ticket.parse().context("parse ticket")?;
-            let endpoint = Endpoint::bind(presets::N0).await.context("bind endpoint")?;
+            let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
             let inbox = Inbox::join(endpoint, ticket, name).await?;
             println!("joined inbox {}", inbox.doc_id());
             Arc::new(inbox)
