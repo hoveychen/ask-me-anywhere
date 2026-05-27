@@ -1,0 +1,27 @@
+# iroh-relay configuration for ask-me-anywhere (M2 self-hosted relay).
+#
+# Schema matches iroh-relay 0.98 (struct `Config`/`TlsConfig` in the binary's
+# main.rs). The relay only dumb-forwards encrypted QUIC traffic and helps with
+# holepunching — it never reads or stores message content.
+#
+# Fill in the two placeholders marked <-- below, point your domain's A/AAAA
+# record at this host, then run via docker-compose.yml or iroh-relay.service.
+
+# ACME http-01 challenge + captive portal live here. Keep on :80.
+http_bind_addr = "[::]:80"
+
+# QUIC address discovery aids NAT holepunching. Requires the [tls] block.
+enable_quic_addr_discovery = true
+
+[tls]
+hostname = "relay.example.com"   # <-- your relay domain (DNS -> this VPS)
+contact = "you@example.com"      # <-- ACME / Let's Encrypt contact email
+cert_mode = "LetsEncrypt"
+prod_tls = true                  # use Let's Encrypt production (valid certs)
+cert_dir = "/var/lib/iroh-relay" # where issued certs are cached (persist this!)
+https_bind_addr = "[::]:443"
+quic_bind_addr = "[::]:7842"
+
+# Clients then use this relay with:
+#   ama create --name desktop --relay https://relay.example.com
+#   ama join   --name phone   --relay https://relay.example.com <TICKET>

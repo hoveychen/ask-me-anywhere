@@ -1,0 +1,15 @@
+# iroh-relay configuration when deployed behind Muvee's Traefik front.
+#
+# Muvee terminates TLS at Traefik and forwards plain HTTP to the container on
+# :8080, so the relay runs without its own [tls] block. iroh's QUIC fastpath
+# (UDP/7842) is NOT routed by Muvee (Traefik is HTTP/HTTPS only), so we
+# explicitly disable QUIC address discovery — clients will use the relay's
+# HTTPS/WebSocket channel instead, which is iroh's documented fallback path.
+
+enable_relay = true
+http_bind_addr = "[::]:8080"
+enable_quic_addr_discovery = false
+
+# Clients connect with e.g.:
+#   ama create --name desktop --relay https://relay.muveeai.com
+#   ama join   --name phone   --relay https://relay.muveeai.com <TICKET>

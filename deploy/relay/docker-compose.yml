@@ -1,0 +1,18 @@
+# Run the self-hosted iroh-relay on a VPS.
+#
+# host networking is the simplest correct setup: the relay needs UDP/7842 for
+# QUIC and :80 for the ACME http-01 challenge, and host mode avoids per-protocol
+# port-mapping pitfalls. If you must use bridge networking instead, replace
+# `network_mode: host` with an explicit `ports:` block exposing 80/tcp, 443/tcp
+# and 7842/udp.
+services:
+  relay:
+    build: .
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./relay.toml:/etc/iroh-relay/relay.toml:ro
+      - relay-certs:/var/lib/iroh-relay
+
+volumes:
+  relay-certs:
