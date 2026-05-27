@@ -17,6 +17,7 @@ import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/ui/card_detail_screen.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
+import 'package:flutter_app/src/ui/join_screen.dart';
 import 'package:flutter_app/src/ui/pairing_screen.dart';
 
 Future<void> main() async {
@@ -143,6 +144,23 @@ class _InboxViewState extends State<InboxView> {
     );
   }
 
+  /// Open the join screen; on success we're now running the joined inbox.
+  Future<void> _openJoin() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => JoinScreen(onJoin: _joinInbox)),
+    );
+  }
+
+  /// Spin up a node that joins the inbox behind [ticket] and switch to it — the
+  /// list then fills with the peer's synced cards.
+  Future<void> _joinInbox(String ticket) async {
+    final joined = await InboxHandle.join(ticket: ticket, device: 'desktop');
+    await _watchSub?.cancel();
+    _inbox = joined;
+    _watchSub = joined.watch().listen((_) => _refresh());
+    await _refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -153,6 +171,11 @@ class _InboxViewState extends State<InboxView> {
             icon: const Icon(Icons.qr_code),
             tooltip: 'Pair a device',
             onPressed: _inbox != null ? _openPairing : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.group_add),
+            tooltip: 'Join an inbox',
+            onPressed: _inbox != null ? _openJoin : null,
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
