@@ -205,7 +205,9 @@ impl Inbox {
 
     /// Subscribe to live document events (inserts, content-ready, neighbor
     /// up/down). Callers watch this to refresh their UI on remote changes.
-    pub async fn subscribe(&self) -> Result<impl futures_lite::Stream<Item = Result<LiveEvent>>> {
+    pub async fn subscribe(
+        &self,
+    ) -> Result<impl futures_lite::Stream<Item = Result<LiveEvent>> + Unpin + use<>> {
         let stream = self.doc.subscribe().await?;
         Ok(stream.map(|res| res.map_err(anyhow::Error::from)))
     }

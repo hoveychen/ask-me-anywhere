@@ -8,4 +8,5 @@ pub mod inbox;
 pub mod model;
 
 pub use inbox::{now_ms, Inbox};
+pub use iroh_docs::engine::LiveEvent;
 pub use model::{data_key, msg_key, state_key, MessageCard, MessageState, Status};
