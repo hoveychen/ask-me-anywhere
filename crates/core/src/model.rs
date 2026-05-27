@@ -83,6 +83,39 @@ pub fn data_key(id: &str, bind_path: &str) -> String {
     format!("data/{id}{bind_path}")
 }
 
+/// The three key families in the inbox doc, recovered from a raw entry key —
+/// the inverse of [`msg_key`] / [`state_key`] / [`data_key`]. Used to route
+/// live document events back to the card (and bind path) they touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyKind {
+    Message { id: String },
+    State { id: String },
+    /// `bind_path` keeps its leading `/` (e.g. `/note`), matching [`data_key`].
+    Data { id: String, bind_path: String },
+}
+
+/// Parse a doc entry key into its [`KeyKind`], or `None` for keys outside the
+/// three families. A `data/` key splits at the first `/` after the prefix, so
+/// the card id (which carries no `/`) is separated from the bind path while the
+/// bind path keeps its leading `/`.
+pub fn parse_key(key: &str) -> Option<KeyKind> {
+    if let Some(rest) = key.strip_prefix("data/") {
+        let slash = rest.find('/')?;
+        let (id, bind_path) = rest.split_at(slash);
+        return Some(KeyKind::Data {
+            id: id.to_string(),
+            bind_path: bind_path.to_string(),
+        });
+    }
+    if let Some(id) = key.strip_prefix("state/") {
+        return Some(KeyKind::State { id: id.to_string() });
+    }
+    if let Some(id) = key.strip_prefix("msg/") {
+        return Some(KeyKind::Message { id: id.to_string() });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +164,31 @@ mod tests {
         assert_eq!(msg_key("abc"), "msg/abc");
         assert_eq!(state_key("abc"), "state/abc");
         assert_eq!(data_key("abc", "/contact/email"), "data/abc/contact/email");
+    }
+
+    #[test]
+    fn parse_key_inverts_key_builders() {
+        assert_eq!(
+            parse_key(&msg_key("abc")),
+            Some(KeyKind::Message { id: "abc".into() })
+        );
+        assert_eq!(
+            parse_key(&state_key("abc")),
+            Some(KeyKind::State { id: "abc".into() })
+        );
+        assert_eq!(
+            parse_key(&data_key("abc", "/note")),
+            Some(KeyKind::Data { id: "abc".into(), bind_path: "/note".into() })
+        );
+        // Nested bind paths keep every segment, leading slash included.
+        assert_eq!(
+            parse_key(&data_key("abc", "/contact/email")),
+            Some(KeyKind::Data {
+                id: "abc".into(),
+                bind_path: "/contact/email".into(),
+            })
+        );
+        assert_eq!(parse_key("other/x"), None);
+        assert_eq!(parse_key("data/justid"), None); // no bind path → not a data entry
     }
 }

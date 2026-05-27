@@ -16,6 +16,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:genui/genui.dart';
 
+import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 
 /// A user action fired from a rendered A2UI surface: the action `name` plus its
@@ -30,12 +31,27 @@ class CardAction {
 }
 
 class CardDetailView extends StatefulWidget {
-  const CardDetailView({super.key, required this.card, this.onAction});
+  const CardDetailView({
+    super.key,
+    required this.card,
+    this.onAction,
+    this.onDataChanged,
+    this.remoteData,
+  });
 
   final CardView card;
 
   /// Invoked whenever the user fires an A2UI action on the rendered surface.
   final ValueChanged<CardAction>? onAction;
+
+  /// Invoked when a bound data-model field is edited locally, so the host can
+  /// write it to the CRDT (`InboxHandle.setData`).
+  final void Function(String path, Object? value)? onDataChanged;
+
+  /// Values synced from peers for this card; each is applied into the data model
+  /// so the bound widgets rebuild. The host builds this from the inbox event
+  /// stream (`InboxHandle.watch` → `getData`).
+  final Stream<CardDataUpdate>? remoteData;
 
   @override
   State<CardDetailView> createState() => _CardDetailViewState();
@@ -46,6 +62,8 @@ class _CardDetailViewState extends State<CardDetailView> {
   String? _surfaceId;
   Object? _error;
   StreamSubscription<ChatMessage>? _actionSub;
+  CardDataBridge? _dataBridge;
+  StreamSubscription<CardDataUpdate>? _remoteSub;
 
   @override
   void initState() {
@@ -55,6 +73,8 @@ class _CardDetailViewState extends State<CardDetailView> {
 
   @override
   void dispose() {
+    _remoteSub?.cancel();
+    _dataBridge?.dispose();
     _actionSub?.cancel();
     _controller?.dispose();
     super.dispose();
@@ -82,6 +102,16 @@ class _CardDetailViewState extends State<CardDetailView> {
     _controller = controller;
     _surfaceId = surfaceId;
     _actionSub = controller.onSubmit.listen(_handleSubmit);
+
+    final DataModel dataModel = controller.contextFor(surfaceId).dataModel;
+    _dataBridge = CardDataBridge(
+      dataModel: dataModel,
+      paths: dataPaths(messages),
+      onLocalChange: (path, value) => widget.onDataChanged?.call(path, value),
+    );
+    _remoteSub = widget.remoteData?.listen(
+      (update) => _dataBridge?.applyRemote(update.path, update.value),
+    );
   }
 
   /// A fired-action `ChatMessage` carries one or more UI interaction parts, each
@@ -147,6 +177,20 @@ String? firstSurfaceId(List<Map<String, Object?>> messages) {
     }
   }
   return null;
+}
+
+/// The data-model paths a tree declares via its `updateDataModel` messages —
+/// the bound fields we watch for two-way sync. Deduplicated, order-preserving.
+List<String> dataPaths(List<Map<String, Object?>> messages) {
+  final List<String> paths = [];
+  for (final message in messages) {
+    final Object? update = message['updateDataModel'];
+    if (update is Map && update['path'] is String) {
+      final String path = update['path'] as String;
+      if (!paths.contains(path)) paths.add(path);
+    }
+  }
+  return paths;
 }
 
 /// Shown when a card has no renderable A2UI tree: the plain-text summary plus a

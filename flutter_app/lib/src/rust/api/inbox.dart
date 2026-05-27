@@ -6,8 +6,8 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `uuid_like`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `from`
+// These functions are ignored because they are not marked as `pub`: `classify_key`, `uuid_like`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InboxHandle>>
 abstract class InboxHandle implements RustOpaqueInterface {
@@ -15,6 +15,10 @@ abstract class InboxHandle implements RustOpaqueInterface {
   /// will plumb the relay choice through to Dart.
   static Future<InboxHandle> create({required String device}) =>
       RustLib.instance.api.crateApiInboxInboxHandleCreate(device: device);
+
+  /// Read the current converged value at a card's data-model path as a JSON
+  /// string, or `None` if unset locally yet.
+  Future<String?> getData({required String msgId, required String bindPath});
 
   /// All cards present in the local replica, newest first, each paired with
   /// its converged [`CardStatus`].
@@ -33,6 +37,22 @@ abstract class InboxHandle implements RustOpaqueInterface {
     required String actionName,
     String? actionContextJson,
   });
+
+  /// Write an A2UI data-model binding value for a card. `bind_path` is a JSON
+  /// Pointer like `/contact/email`; `value_json` is the value serialized as
+  /// JSON. Converges across devices (latest-writer-wins per path).
+  Future<void> setData({
+    required String msgId,
+    required String bindPath,
+    required String valueJson,
+  });
+
+  /// Live document changes, for refreshing the UI on remote (and local)
+  /// writes. Each event names the touched key family (`message` / `state` /
+  /// `data`), plus a coarse `tick` when a sync / content batch completes (the
+  /// point at which freshly-synced remote content becomes readable). The Dart
+  /// side fetches the actual value via [`get_data`] / [`list_messages`].
+  Stream<DocEvent> watch();
 }
 
 /// Mirror of [`ama_core::Status`] for Dart — the core enum's `Serialize` impl
@@ -82,4 +102,32 @@ class CardView {
           createdAt == other.createdAt &&
           a2UiJson == other.a2UiJson &&
           status == other.status;
+}
+
+/// A coarse document-change notification surfaced to Dart by [`InboxHandle::watch`].
+/// Dart reacts by re-fetching the touched value; the event itself carries only
+/// enough to know *what* changed, not the new bytes.
+class DocEvent {
+  /// One of `"message"`, `"state"`, `"data"`, `"tick"`.
+  final String kind;
+
+  /// The card id the change concerns (absent for `"tick"`).
+  final String? msgId;
+
+  /// For `"data"` events, the JSON-Pointer bind path (e.g. `/note`).
+  final String? bindPath;
+
+  const DocEvent({required this.kind, this.msgId, this.bindPath});
+
+  @override
+  int get hashCode => kind.hashCode ^ msgId.hashCode ^ bindPath.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DocEvent &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          msgId == other.msgId &&
+          bindPath == other.bindPath;
 }
