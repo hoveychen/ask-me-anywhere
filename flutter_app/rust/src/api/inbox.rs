@@ -66,6 +66,23 @@ impl InboxHandle {
         Ok(InboxHandle { inner: Arc::new(inbox) })
     }
 
+    /// Join an existing inbox from a serialized pairing ticket string — the QR /
+    /// paste payload another device produced via [`ticket`]. Spins up a fresh
+    /// node that imports the shared doc and starts syncing.
+    #[frb]
+    pub async fn join(ticket: String, device: String) -> Result<InboxHandle> {
+        let endpoint = build_endpoint(RelayChoice::N0).await?;
+        let inbox = Inbox::join_ticket(endpoint, &ticket, device).await?;
+        Ok(InboxHandle { inner: Arc::new(inbox) })
+    }
+
+    /// This inbox's pairing ticket as a string. Render it as a QR code (or let
+    /// the user copy it) so another device can [`join`] this inbox.
+    #[frb]
+    pub async fn ticket(&self) -> Result<String> {
+        self.inner.ticket_string().await
+    }
+
     /// Push a new actionable card. `a2ui_json` is the A2UI message tree
     /// serialized as JSON; pass `"{}"` if you don't have one yet.
     #[frb]
