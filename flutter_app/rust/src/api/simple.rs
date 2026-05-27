@@ -1,10 +1,5 @@
-#[flutter_rust_bridge::frb(sync)] // Synchronous mode for simplicity of the demo
-pub fn greet(name: String) -> String {
-    format!("Hello, {name}!")
-}
-
+/// Runs once on `RustLib.init()` — sets up the FRB error/log plumbing.
 #[flutter_rust_bridge::frb(init)]
 pub fn init_app() {
-    // Default utilities - feel free to customize
     flutter_rust_bridge::setup_default_user_utils();
 }
