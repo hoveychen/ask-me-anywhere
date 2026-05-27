@@ -17,6 +17,7 @@ import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/ui/card_detail_screen.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
+import 'package:flutter_app/src/ui/pairing_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -131,12 +132,28 @@ class _InboxViewState extends State<InboxView> {
     await _refresh();
   }
 
+  /// Fetch this inbox's pairing ticket and show it as a QR code to scan.
+  Future<void> _openPairing() async {
+    final inbox = _inbox;
+    if (inbox == null) return;
+    final String ticket = await inbox.ticket();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => PairingScreen(ticket: ticket)),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('ask-me-anywhere · inbox'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code),
+            tooltip: 'Pair a device',
+            onPressed: _inbox != null ? _openPairing : null,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
