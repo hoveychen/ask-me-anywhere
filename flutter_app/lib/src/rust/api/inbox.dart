@@ -20,6 +20,17 @@ abstract class InboxHandle implements RustOpaqueInterface {
   /// string, or `None` if unset locally yet.
   Future<String?> getData({required String msgId, required String bindPath});
 
+  /// Join an existing inbox from a serialized pairing ticket string — the QR /
+  /// paste payload another device produced via [`ticket`]. Spins up a fresh
+  /// node that imports the shared doc and starts syncing.
+  static Future<InboxHandle> join({
+    required String ticket,
+    required String device,
+  }) => RustLib.instance.api.crateApiInboxInboxHandleJoin(
+    ticket: ticket,
+    device: device,
+  );
+
   /// All cards present in the local replica, newest first, each paired with
   /// its converged [`CardStatus`].
   Future<List<CardView>> listMessages();
@@ -46,6 +57,10 @@ abstract class InboxHandle implements RustOpaqueInterface {
     required String bindPath,
     required String valueJson,
   });
+
+  /// This inbox's pairing ticket as a string. Render it as a QR code (or let
+  /// the user copy it) so another device can [`join`] this inbox.
+  Future<String> ticket();
 
   /// Live document changes, for refreshing the UI on remote (and local)
   /// writes. Each event names the touched key family (`message` / `state` /

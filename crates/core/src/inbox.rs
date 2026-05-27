@@ -100,6 +100,24 @@ impl Inbox {
             .context("share inbox ticket")
     }
 
+    /// This inbox's pairing ticket serialized as a string — the payload a new
+    /// device renders as a QR code (or pastes) and feeds to [`Inbox::join_ticket`].
+    /// Round-trips with [`Inbox::join_ticket`] via `DocTicket`'s `Display`/`FromStr`.
+    pub async fn ticket_string(&self) -> Result<String> {
+        Ok(self.ticket().await?.to_string())
+    }
+
+    /// Join an existing inbox from its serialized [`Inbox::ticket_string`].
+    /// Convenience over [`Inbox::join`] that parses the ticket on the way in.
+    pub async fn join_ticket(
+        endpoint: Endpoint,
+        ticket: &str,
+        device: impl Into<String>,
+    ) -> Result<Self> {
+        let ticket: DocTicket = ticket.parse().context("parse doc ticket")?;
+        Self::join(endpoint, ticket, device).await
+    }
+
     // ---- messages (msg/<id>, immutable) -----------------------------------
 
     /// Push a new actionable card. Writes `msg/<id>`; the card is immutable, so

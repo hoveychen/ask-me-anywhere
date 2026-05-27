@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 110380855;
+  int get rustContentHash => 843412919;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -84,6 +84,11 @@ abstract class RustLibApi extends BaseApi {
     required InboxHandle that,
     required String msgId,
     required String bindPath,
+  });
+
+  Future<InboxHandle> crateApiInboxInboxHandleJoin({
+    required String ticket,
+    required String device,
   });
 
   Future<List<CardView>> crateApiInboxInboxHandleListMessages({
@@ -109,6 +114,8 @@ abstract class RustLibApi extends BaseApi {
     required String bindPath,
     required String valueJson,
   });
+
+  Future<String> crateApiInboxInboxHandleTicket({required InboxHandle that});
 
   Stream<DocEvent> crateApiInboxInboxHandleWatch({required InboxHandle that});
 
@@ -204,6 +211,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<InboxHandle> crateApiInboxInboxHandleJoin({
+    required String ticket,
+    required String device,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(ticket, serializer);
+          sse_encode_String(device, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 3,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData:
+              sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInboxHandle,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiInboxInboxHandleJoinConstMeta,
+        argValues: [ticket, device],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiInboxInboxHandleJoinConstMeta =>
+      const TaskConstMeta(
+        debugName: "InboxHandle_join",
+        argNames: ["ticket", "device"],
+      );
+
+  @override
   Future<List<CardView>> crateApiInboxInboxHandleListMessages({
     required InboxHandle that,
   }) {
@@ -218,7 +261,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 3,
+            funcId: 4,
             port: port_,
           );
         },
@@ -258,7 +301,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 5,
             port: port_,
           );
         },
@@ -300,7 +343,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 5,
+            funcId: 6,
             port: port_,
           );
         },
@@ -342,7 +385,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 6,
+            funcId: 7,
             port: port_,
           );
         },
@@ -364,6 +407,37 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<String> crateApiInboxInboxHandleTicket({required InboxHandle that}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInboxHandle(
+            that,
+            serializer,
+          );
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 8,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_String,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiInboxInboxHandleTicketConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiInboxInboxHandleTicketConstMeta =>
+      const TaskConstMeta(debugName: "InboxHandle_ticket", argNames: ["that"]);
+
+  @override
   Stream<DocEvent> crateApiInboxInboxHandleWatch({required InboxHandle that}) {
     final sink = RustStreamSink<DocEvent>();
     unawaited(
@@ -379,7 +453,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 7,
+              funcId: 9,
               port: port_,
             );
           },
@@ -411,7 +485,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 8,
+            funcId: 10,
             port: port_,
           );
         },
@@ -957,6 +1031,11 @@ class InboxHandleImpl extends RustOpaque implements InboxHandle {
     bindPath: bindPath,
     valueJson: valueJson,
   );
+
+  /// This inbox's pairing ticket as a string. Render it as a QR code (or let
+  /// the user copy it) so another device can [`join`] this inbox.
+  Future<String> ticket() =>
+      RustLib.instance.api.crateApiInboxInboxHandleTicket(that: this);
 
   /// Live document changes, for refreshing the UI on remote (and local)
   /// writes. Each event names the touched key family (`message` / `state` /

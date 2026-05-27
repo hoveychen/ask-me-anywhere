@@ -13,10 +13,13 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_app/src/a2ui_sample.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
+import 'package:flutter_app/src/notify/card_notifier.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/ui/card_detail_screen.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
+import 'package:flutter_app/src/ui/join_screen.dart';
+import 'package:flutter_app/src/ui/pairing_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,6 +53,9 @@ class _InboxViewState extends State<InboxView> {
   Object? _error;
   bool _booting = true;
   StreamSubscription<DocEvent>? _watchSub;
+  final LocalCardNotifier _notifier = LocalCardNotifier();
+  // Card ids we've already raised a notification for (notify at most once each).
+  final Set<String> _notified = {};
   // Cycle a few representative summaries for the debug FAB.
   static const _samples = [
     'Deploy production?',
@@ -72,15 +78,29 @@ class _InboxViewState extends State<InboxView> {
 
   Future<void> _boot() async {
     try {
+      // Notifications are best-effort; a denied/failed init must not block boot.
+      try {
+        await _notifier.init();
+      } catch (_) {}
       final inbox = await InboxHandle.create(device: 'desktop');
       _inbox = inbox;
-      // Refresh the list whenever the doc changes (local writes + remote sync).
-      _watchSub = inbox.watch().listen((_) => _refresh());
+      // Refresh + maybe notify whenever the doc changes (local + remote writes).
+      _watchSub = inbox.watch().listen(_onDocEvent);
       await _refresh();
     } catch (e) {
       setState(() => _error = e);
     } finally {
       if (mounted) setState(() => _booting = false);
+    }
+  }
+
+  /// Refresh the list on any doc change, and raise a native notification the
+  /// first time a card arrives (kind == "message").
+  Future<void> _onDocEvent(DocEvent event) async {
+    await _refresh();
+    final CardView? card = newCardFor(event.kind, event.msgId, _cards);
+    if (card != null && _notified.add(card.id)) {
+      await _notifier.notifyCard(card);
     }
   }
 
@@ -131,12 +151,50 @@ class _InboxViewState extends State<InboxView> {
     await _refresh();
   }
 
+  /// Fetch this inbox's pairing ticket and show it as a QR code to scan.
+  Future<void> _openPairing() async {
+    final inbox = _inbox;
+    if (inbox == null) return;
+    final String ticket = await inbox.ticket();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => PairingScreen(ticket: ticket)),
+    );
+  }
+
+  /// Open the join screen; on success we're now running the joined inbox.
+  Future<void> _openJoin() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => JoinScreen(onJoin: _joinInbox)),
+    );
+  }
+
+  /// Spin up a node that joins the inbox behind [ticket] and switch to it — the
+  /// list then fills with the peer's synced cards.
+  Future<void> _joinInbox(String ticket) async {
+    final joined = await InboxHandle.join(ticket: ticket, device: 'desktop');
+    await _watchSub?.cancel();
+    _inbox = joined;
+    _watchSub = joined.watch().listen(_onDocEvent);
+    await _refresh();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('ask-me-anywhere · inbox'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code),
+            tooltip: 'Pair a device',
+            onPressed: _inbox != null ? _openPairing : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.group_add),
+            tooltip: 'Join an inbox',
+            onPressed: _inbox != null ? _openJoin : null,
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
