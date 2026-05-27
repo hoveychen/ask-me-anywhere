@@ -37,6 +37,11 @@ dependencies:
   ama_bridge:
     path: rust_builder
   flutter_rust_bridge: 2.12.0
+  genui:
+    git:
+      url: https://github.com/flutter/genui
+      ref: a8293b9c8d68fd36be9750ec1ecb4c1fc2412d2d
+      path: packages/genui
 
 dev_dependencies:
   flutter_test:

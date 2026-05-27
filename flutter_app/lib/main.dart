@@ -1,13 +1,22 @@
-// ask-me-anywhere — Flutter macOS shell (M3a).
+// ask-me-anywhere — Flutter macOS shell.
 //
 // Boots an in-memory inbox via the FRB bridge to ama-core, renders the local
-// cards in a list, and exposes a debug "Push test card" FAB so we can see
-// cards appear without wiring a real source yet. M3b/c will replace the FAB
-// with real A2UI rendering, dismiss/action, QR pairing, and native notifs.
+// cards in a list, and lets you tap into a card's live A2UI surface. The debug
+// FAB pushes a real sample A2UI tree so there's something to render; tapping a
+// card opens it, where actions (Approve / Dismiss) and bound-field edits flow
+// back into the CRDT. A `watch()` subscription refreshes the list as state
+// converges. M3c adds QR pairing + native notifications.
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
+import 'package:flutter_app/src/a2ui_sample.dart';
+import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
+import 'package:flutter_app/src/ui/card_detail_screen.dart';
+import 'package:flutter_app/src/ui/card_detail_view.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,6 +49,7 @@ class _InboxViewState extends State<InboxView> {
   List<CardView> _cards = const [];
   Object? _error;
   bool _booting = true;
+  StreamSubscription<DocEvent>? _watchSub;
   // Cycle a few representative summaries for the debug FAB.
   static const _samples = [
     'Deploy production?',
@@ -54,10 +64,18 @@ class _InboxViewState extends State<InboxView> {
     _boot();
   }
 
+  @override
+  void dispose() {
+    _watchSub?.cancel();
+    super.dispose();
+  }
+
   Future<void> _boot() async {
     try {
       final inbox = await InboxHandle.create(device: 'desktop');
       _inbox = inbox;
+      // Refresh the list whenever the doc changes (local writes + remote sync).
+      _watchSub = inbox.watch().listen((_) => _refresh());
       await _refresh();
     } catch (e) {
       setState(() => _error = e);
@@ -78,7 +96,38 @@ class _InboxViewState extends State<InboxView> {
     final inbox = _inbox;
     if (inbox == null) return;
     final summary = _samples[_cards.length % _samples.length];
-    await inbox.push(summary: summary, a2UiJson: '{}');
+    await inbox.push(
+      summary: summary,
+      a2UiJson: sampleA2uiJson(surfaceId: 'card', title: summary),
+    );
+    await _refresh();
+  }
+
+  Future<void> _openCard(CardView card) async {
+    final inbox = _inbox;
+    if (inbox == null) return;
+    final List<String> paths = dataPaths(parseA2uiMessages(card.a2UiJson));
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CardDetailScreen(
+          card: card,
+          onAction: (action) => inbox.recordAction(
+            msgId: card.id,
+            actionName: action.name,
+            actionContextJson:
+                action.context.isEmpty ? null : jsonEncode(action.context),
+          ),
+          onDismiss: () =>
+              inbox.recordAction(msgId: card.id, actionName: 'dismiss'),
+          onDataChanged: (path, value) => inbox.setData(
+            msgId: card.id,
+            bindPath: path,
+            valueJson: jsonEncode(value),
+          ),
+          remoteData: _watchCardData(inbox, card.id, paths),
+        ),
+      ),
+    );
     await _refresh();
   }
 
@@ -113,21 +162,46 @@ class _InboxViewState extends State<InboxView> {
                     )
                   : ListView.builder(
                       itemCount: _cards.length,
-                      itemBuilder: (_, i) => _CardTile(_cards[i]),
+                      itemBuilder: (_, i) =>
+                          _CardTile(_cards[i], onTap: () => _openCard(_cards[i])),
                     ),
     );
   }
 }
 
+/// Live data-model updates for one card, derived from the inbox event stream:
+/// on any `data` event for this card (or a `tick` marking freshly-synced remote
+/// content as readable), re-pull each declared bind path and emit its value.
+Stream<CardDataUpdate> _watchCardData(
+  InboxHandle inbox,
+  String cardId,
+  List<String> paths,
+) async* {
+  if (paths.isEmpty) return;
+  await for (final DocEvent event in inbox.watch()) {
+    final bool relevant =
+        (event.kind == 'data' && event.msgId == cardId) || event.kind == 'tick';
+    if (!relevant) continue;
+    for (final String path in paths) {
+      final String? json = await inbox.getData(msgId: cardId, bindPath: path);
+      if (json != null) {
+        yield CardDataUpdate(path: path, value: jsonDecode(json));
+      }
+    }
+  }
+}
+
 class _CardTile extends StatelessWidget {
   final CardView card;
-  const _CardTile(this.card);
+  final VoidCallback onTap;
+  const _CardTile(this.card, {required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final created =
         DateTime.fromMillisecondsSinceEpoch(card.createdAt.toInt()).toLocal();
     return ListTile(
+      onTap: onTap,
       leading: CircleAvatar(child: Icon(_iconForStatus(card.status))),
       title: Text(card.summary),
       subtitle: Text(

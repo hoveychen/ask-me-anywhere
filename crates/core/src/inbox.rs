@@ -31,7 +31,9 @@ use iroh_docs::{
 };
 use iroh_gossip::net::Gossip;
 
-use crate::model::{data_key, msg_key, state_key, MessageCard, MessageState, Status};
+use crate::model::{
+    data_key, msg_key, state_key, status_for_action, MessageCard, MessageState,
+};
 
 /// One device's view of the shared message-card inbox.
 ///
@@ -165,18 +167,31 @@ impl Inbox {
         Ok(winner)
     }
 
-    /// Convenience: dismiss a card globally (`status = dismissed`,
-    /// `action_name = "dismiss"`), stamped with this device and the current time.
-    pub async fn dismiss(&self, id: &str) -> Result<()> {
+    /// Record a fired A2UI action against a card, converging its global status:
+    /// the `"dismiss"` action name dismisses the card, every other action marks
+    /// it actioned (see [`status_for_action`]). Stamped with this device and the
+    /// current time so reads reconcile via [`MessageState::wins_over`].
+    pub async fn record_action(
+        &self,
+        id: &str,
+        action_name: &str,
+        action_context: Option<serde_json::Value>,
+    ) -> Result<()> {
         self.set_state(&MessageState {
             msg_id: id.to_string(),
-            status: Status::Dismissed,
-            action_name: Some("dismiss".into()),
-            action_context: None,
+            status: status_for_action(action_name),
+            action_name: Some(action_name.to_string()),
+            action_context,
             device: self.device.clone(),
             ts: now_ms(),
         })
         .await
+    }
+
+    /// Convenience: dismiss a card globally (`status = dismissed`,
+    /// `action_name = "dismiss"`), stamped with this device and the current time.
+    pub async fn dismiss(&self, id: &str) -> Result<()> {
+        self.record_action(id, "dismiss", None).await
     }
 
     // ---- data model (data/<id>/<bindPath>, multi-writer LWW) --------------
