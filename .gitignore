@@ -1,0 +1,22 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Flutter / Dart (later milestones)
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+
+# Fleet scratch / workflow
+TASKS.md
+.worktrees/
+
+# OS / editor
+.DS_Store
+*.log
+*.swp
