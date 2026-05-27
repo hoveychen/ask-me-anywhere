@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_app/src/a2ui_sample.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
+import 'package:flutter_app/src/notify/card_notifier.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/ui/card_detail_screen.dart';
@@ -52,6 +53,9 @@ class _InboxViewState extends State<InboxView> {
   Object? _error;
   bool _booting = true;
   StreamSubscription<DocEvent>? _watchSub;
+  final LocalCardNotifier _notifier = LocalCardNotifier();
+  // Card ids we've already raised a notification for (notify at most once each).
+  final Set<String> _notified = {};
   // Cycle a few representative summaries for the debug FAB.
   static const _samples = [
     'Deploy production?',
@@ -74,15 +78,29 @@ class _InboxViewState extends State<InboxView> {
 
   Future<void> _boot() async {
     try {
+      // Notifications are best-effort; a denied/failed init must not block boot.
+      try {
+        await _notifier.init();
+      } catch (_) {}
       final inbox = await InboxHandle.create(device: 'desktop');
       _inbox = inbox;
-      // Refresh the list whenever the doc changes (local writes + remote sync).
-      _watchSub = inbox.watch().listen((_) => _refresh());
+      // Refresh + maybe notify whenever the doc changes (local + remote writes).
+      _watchSub = inbox.watch().listen(_onDocEvent);
       await _refresh();
     } catch (e) {
       setState(() => _error = e);
     } finally {
       if (mounted) setState(() => _booting = false);
+    }
+  }
+
+  /// Refresh the list on any doc change, and raise a native notification the
+  /// first time a card arrives (kind == "message").
+  Future<void> _onDocEvent(DocEvent event) async {
+    await _refresh();
+    final CardView? card = newCardFor(event.kind, event.msgId, _cards);
+    if (card != null && _notified.add(card.id)) {
+      await _notifier.notifyCard(card);
     }
   }
 
@@ -157,7 +175,7 @@ class _InboxViewState extends State<InboxView> {
     final joined = await InboxHandle.join(ticket: ticket, device: 'desktop');
     await _watchSub?.cancel();
     _inbox = joined;
-    _watchSub = joined.watch().listen((_) => _refresh());
+    _watchSub = joined.watch().listen(_onDocEvent);
     await _refresh();
   }
 

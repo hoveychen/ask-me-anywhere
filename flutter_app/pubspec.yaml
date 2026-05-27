@@ -43,6 +43,7 @@ dependencies:
       ref: a8293b9c8d68fd36be9750ec1ecb4c1fc2412d2d
       path: packages/genui
   qr_flutter: ^4.1.0
+  flutter_local_notifications: ^21.0.0
 
 dev_dependencies:
   flutter_test:
