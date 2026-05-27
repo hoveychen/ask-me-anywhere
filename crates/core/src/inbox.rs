@@ -83,6 +83,11 @@ impl Inbox {
         self.author
     }
 
+    /// The underlying iroh endpoint (for address inspection / liveness checks).
+    pub fn endpoint(&self) -> &Endpoint {
+        self.router.endpoint()
+    }
+
     /// Produce a write-capable ticket for pairing a new device. Encodes the
     /// namespace key plus our relay + direct addresses so the joiner can both
     /// authorize into the doc and dial us.
