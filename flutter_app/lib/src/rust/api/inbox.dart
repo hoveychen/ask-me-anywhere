@@ -23,6 +23,16 @@ abstract class InboxHandle implements RustOpaqueInterface {
   /// Push a new actionable card. `a2ui_json` is the A2UI message tree
   /// serialized as JSON; pass `"{}"` if you don't have one yet.
   Future<String> push({required String summary, required String a2UiJson});
+
+  /// Record a fired A2UI action against a card. `action_name == "dismiss"`
+  /// dismisses the card; any other name marks it actioned. `action_context_json`
+  /// is the resolved A2UI action context (BoundValue map) as a JSON string, or
+  /// `None`/empty when the action carried no context. Converges across devices.
+  Future<void> recordAction({
+    required String msgId,
+    required String actionName,
+    String? actionContextJson,
+  });
 }
 
 /// Mirror of [`ama_core::Status`] for Dart — the core enum's `Serialize` impl

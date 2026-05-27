@@ -66,7 +66,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => 417423947;
+  int get rustContentHash => 2116742947;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -88,6 +88,13 @@ abstract class RustLibApi extends BaseApi {
     required InboxHandle that,
     required String summary,
     required String a2UiJson,
+  });
+
+  Future<void> crateApiInboxInboxHandleRecordAction({
+    required InboxHandle that,
+    required String msgId,
+    required String actionName,
+    String? actionContextJson,
   });
 
   Future<void> crateApiSimpleInitApp();
@@ -218,6 +225,48 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<void> crateApiInboxInboxHandleRecordAction({
+    required InboxHandle that,
+    required String msgId,
+    required String actionName,
+    String? actionContextJson,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerInboxHandle(
+            that,
+            serializer,
+          );
+          sse_encode_String(msgId, serializer);
+          sse_encode_String(actionName, serializer);
+          sse_encode_opt_String(actionContextJson, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 4,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiInboxInboxHandleRecordActionConstMeta,
+        argValues: [that, msgId, actionName, actionContextJson],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiInboxInboxHandleRecordActionConstMeta =>
+      const TaskConstMeta(
+        debugName: "InboxHandle_record_action",
+        argNames: ["that", "msgId", "actionName", "actionContextJson"],
+      );
+
+  @override
   Future<void> crateApiSimpleInitApp() {
     return handler.executeNormal(
       NormalTask(
@@ -226,7 +275,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 4,
+            funcId: 5,
             port: port_,
           );
         },
@@ -329,6 +378,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as Uint8List;
+  }
+
+  @protected
+  String? dco_decode_opt_String(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_String(raw);
   }
 
   @protected
@@ -454,6 +509,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var len_ = sse_decode_i_32(deserializer);
     return deserializer.buffer.getUint8List(len_);
+  }
+
+  @protected
+  String? sse_decode_opt_String(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_String(deserializer));
+    } else {
+      return null;
+    }
   }
 
   @protected
@@ -585,6 +651,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_String(String? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_String(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_u_64(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
@@ -646,4 +722,19 @@ class InboxHandleImpl extends RustOpaque implements InboxHandle {
         summary: summary,
         a2UiJson: a2UiJson,
       );
+
+  /// Record a fired A2UI action against a card. `action_name == "dismiss"`
+  /// dismisses the card; any other name marks it actioned. `action_context_json`
+  /// is the resolved A2UI action context (BoundValue map) as a JSON string, or
+  /// `None`/empty when the action carried no context. Converges across devices.
+  Future<void> recordAction({
+    required String msgId,
+    required String actionName,
+    String? actionContextJson,
+  }) => RustLib.instance.api.crateApiInboxInboxHandleRecordAction(
+    that: this,
+    msgId: msgId,
+    actionName: actionName,
+    actionContextJson: actionContextJson,
+  );
 }

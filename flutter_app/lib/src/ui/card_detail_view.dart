@@ -5,7 +5,12 @@
 //
 // An empty (`{}` / `[]`), missing-surface, or malformed payload falls back to a
 // plain summary so a card always renders *something* and never throws into the
-// widget tree. (Action → CRDT and data-model sync land in P2/P3.)
+// widget tree.
+//
+// User actions fired from the rendered surface (button taps) surface through
+// the [onAction] callback as [CardAction]s; the host wires that to the CRDT
+// (`InboxHandle.recordAction`). Data-model sync lands in P3.
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -13,10 +18,24 @@ import 'package:genui/genui.dart';
 
 import 'package:flutter_app/src/rust/api/inbox.dart';
 
+/// A user action fired from a rendered A2UI surface: the action `name` plus its
+/// resolved context (the A2UI BoundValue map). `name == "dismiss"` is the
+/// dismiss convention the CRDT side keys off.
+@immutable
+class CardAction {
+  const CardAction({required this.name, this.context = const {}});
+
+  final String name;
+  final Map<String, Object?> context;
+}
+
 class CardDetailView extends StatefulWidget {
-  const CardDetailView({super.key, required this.card});
+  const CardDetailView({super.key, required this.card, this.onAction});
 
   final CardView card;
+
+  /// Invoked whenever the user fires an A2UI action on the rendered surface.
+  final ValueChanged<CardAction>? onAction;
 
   @override
   State<CardDetailView> createState() => _CardDetailViewState();
@@ -26,6 +45,7 @@ class _CardDetailViewState extends State<CardDetailView> {
   SurfaceController? _controller;
   String? _surfaceId;
   Object? _error;
+  StreamSubscription<ChatMessage>? _actionSub;
 
   @override
   void initState() {
@@ -35,6 +55,7 @@ class _CardDetailViewState extends State<CardDetailView> {
 
   @override
   void dispose() {
+    _actionSub?.cancel();
     _controller?.dispose();
     super.dispose();
   }
@@ -60,6 +81,30 @@ class _CardDetailViewState extends State<CardDetailView> {
     }
     _controller = controller;
     _surfaceId = surfaceId;
+    _actionSub = controller.onSubmit.listen(_handleSubmit);
+  }
+
+  /// A fired-action `ChatMessage` carries one or more UI interaction parts, each
+  /// a JSON string `{version, action: {name, context, ...}}`. Forward each as a
+  /// [CardAction].
+  void _handleSubmit(ChatMessage message) {
+    final ValueChanged<CardAction>? onAction = widget.onAction;
+    if (onAction == null) return;
+    for (final part in message.parts.uiInteractionParts) {
+      final Object? decoded = jsonDecode(part.interaction);
+      if (decoded is! Map) continue;
+      final Object? action = decoded['action'];
+      if (action is! Map) continue;
+      final Object? name = action['name'];
+      if (name is! String) continue;
+      final Object? context = action['context'];
+      onAction(CardAction(
+        name: name,
+        context: context is Map
+            ? context.cast<String, Object?>()
+            : const <String, Object?>{},
+      ));
+    }
   }
 
   @override

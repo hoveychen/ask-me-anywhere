@@ -57,6 +57,16 @@ impl MessageState {
     }
 }
 
+/// The global [`Status`] a fired A2UI action converges a card to. The
+/// `"dismiss"` action name is the dismiss convention; every other action marks
+/// the card actioned. See [`crate::inbox::Inbox::record_action`].
+pub fn status_for_action(action_name: &str) -> Status {
+    match action_name {
+        "dismiss" => Status::Dismissed,
+        _ => Status::Actioned,
+    }
+}
+
 /// Key for a card's immutable payload.
 pub fn msg_key(id: &str) -> String {
     format!("msg/{id}")
@@ -106,6 +116,14 @@ mod tests {
         // "desktop" > "android" lexically, deterministic either way.
         assert!(b.wins_over(&a));
         assert!(!a.wins_over(&b));
+    }
+
+    #[test]
+    fn status_for_action_maps_dismiss_and_others() {
+        assert_eq!(status_for_action("dismiss"), Status::Dismissed);
+        assert_eq!(status_for_action("approve"), Status::Actioned);
+        assert_eq!(status_for_action("snooze"), Status::Actioned);
+        assert_eq!(status_for_action(""), Status::Actioned);
     }
 
     #[test]

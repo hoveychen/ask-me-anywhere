@@ -17,9 +17,15 @@ CardView _card({required String summary, required String a2UiJson}) => CardView(
       status: CardStatus.unread,
     );
 
-Future<void> _pump(WidgetTester tester, CardView card) async {
+Future<void> _pump(
+  WidgetTester tester,
+  CardView card, {
+  ValueChanged<CardAction>? onAction,
+}) async {
   await tester.pumpWidget(
-    MaterialApp(home: Scaffold(body: CardDetailView(card: card))),
+    MaterialApp(
+      home: Scaffold(body: CardDetailView(card: card, onAction: onAction)),
+    ),
   );
   await tester.pumpAndSettle();
 }
@@ -69,6 +75,23 @@ void main() {
     expect(find.byType(TextField), findsOneWidget); // bound note field
     // The fallback is NOT shown when the tree renders.
     expect(find.text('(no A2UI content)'), findsNothing);
+  });
+
+  testWidgets('button taps surface as CardActions', (tester) async {
+    final List<CardAction> fired = [];
+    final card = _card(
+      summary: 'Deploy production?',
+      a2UiJson: sampleA2uiJson(surfaceId: 'card', title: 'Deploy production?'),
+    );
+    await _pump(tester, card, onAction: fired.add);
+
+    await tester.tap(find.byType(ElevatedButton)); // primary Approve
+    await tester.pumpAndSettle();
+    expect(fired.map((a) => a.name), ['approve']);
+
+    await tester.tap(find.byType(TextButton)); // borderless Dismiss
+    await tester.pumpAndSettle();
+    expect(fired.map((a) => a.name), ['approve', 'dismiss']);
   });
 
   testWidgets('falls back to summary for an empty payload', (tester) async {

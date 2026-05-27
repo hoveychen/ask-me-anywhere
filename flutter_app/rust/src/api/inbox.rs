@@ -79,6 +79,26 @@ impl InboxHandle {
         Ok(card.id)
     }
 
+    /// Record a fired A2UI action against a card. `action_name == "dismiss"`
+    /// dismisses the card; any other name marks it actioned. `action_context_json`
+    /// is the resolved A2UI action context (BoundValue map) as a JSON string, or
+    /// `None`/empty when the action carried no context. Converges across devices.
+    #[frb]
+    pub async fn record_action(
+        &self,
+        msg_id: String,
+        action_name: String,
+        action_context_json: Option<String>,
+    ) -> Result<()> {
+        let context = match action_context_json {
+            Some(s) if !s.trim().is_empty() => {
+                Some(serde_json::from_str(&s).context("invalid action_context_json")?)
+            }
+            _ => None,
+        };
+        self.inner.record_action(&msg_id, &action_name, context).await
+    }
+
     /// All cards present in the local replica, newest first, each paired with
     /// its converged [`CardStatus`].
     #[frb]
