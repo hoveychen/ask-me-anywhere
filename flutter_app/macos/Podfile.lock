@@ -14,7 +14,7 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral
 
 SPEC CHECKSUMS:
-  ama_bridge: a1f065bbf256c056298db313338591e8c39b5a92
+  ama_bridge: 4bfbc7ea7fd9cb7cba7e1d3419163c17e38c89d2
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
 
 PODFILE CHECKSUM: 54d867c82ac51cbd61b565781b9fada492027009

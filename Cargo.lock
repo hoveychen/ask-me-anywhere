@@ -125,7 +125,10 @@ dependencies = [
 name = "ama_bridge"
 version = "0.1.0"
 dependencies = [
+ "ama-core",
+ "anyhow",
  "flutter_rust_bridge",
+ "serde_json",
 ]
 
 [[package]]
