@@ -1,6 +1,6 @@
-// Native (macOS) notifications for arriving cards. A doc `watch()` event of kind
-// "message" means a card was inserted (locally pushed or synced from a peer);
-// we raise a system notification titled with the card's summary.
+// Native notifications (macOS + Android) for arriving cards. A doc `watch()`
+// event of kind "message" means a card was inserted (locally pushed or synced
+// from a peer); we raise a system notification titled with the card's summary.
 //
 // [newCardFor] is the pure, testable decision (which event → which card);
 // [LocalCardNotifier] is the thin flutter_local_notifications wrapper the host
@@ -20,16 +20,19 @@ CardView? newCardFor(String kind, String? msgId, List<CardView> cards) {
   return null;
 }
 
-/// Raises native macOS notifications via flutter_local_notifications.
+/// Raises native notifications (macOS + Android) via flutter_local_notifications.
 class LocalCardNotifier {
   LocalCardNotifier([FlutterLocalNotificationsPlugin? plugin])
       : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
 
+  static const _channelId = 'ama_cards';
+  static const _channelName = 'Cards';
+
   final FlutterLocalNotificationsPlugin _plugin;
   int _nextId = 0;
 
-  /// Initialize the plugin and request macOS notification authorization. Safe to
-  /// call once at startup.
+  /// Initialize the plugin and request notification authorization (macOS alert
+  /// permission, Android 13+ POST_NOTIFICATIONS). Safe to call once at startup.
   Future<void> init() async {
     const settings = InitializationSettings(
       macOS: DarwinInitializationSettings(
@@ -37,12 +40,17 @@ class LocalCardNotifier {
         requestBadgePermission: false,
         requestSoundPermission: true,
       ),
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     );
     await _plugin.initialize(settings: settings);
     await _plugin
         .resolvePlatformSpecificImplementation<
             MacOSFlutterLocalNotificationsPlugin>()
         ?.requestPermissions(alert: true, badge: false, sound: true);
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
   }
 
   /// Show a notification for a card: its summary as the title.
@@ -51,8 +59,16 @@ class LocalCardNotifier {
       id: _nextId++,
       title: card.summary,
       body: 'New card from ${card.source}',
-      notificationDetails:
-          const NotificationDetails(macOS: DarwinNotificationDetails()),
+      notificationDetails: const NotificationDetails(
+        macOS: DarwinNotificationDetails(),
+        android: AndroidNotificationDetails(
+          _channelId,
+          _channelName,
+          channelDescription: 'Arriving message cards',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+      ),
     );
   }
 }

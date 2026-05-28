@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_app/src/a2ui_sample.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/notify/card_notifier.dart';
+import 'package:flutter_app/src/notify/foreground_service.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/ui/card_detail_screen.dart';
@@ -87,6 +88,10 @@ class _InboxViewState extends State<InboxView> {
       // Refresh + maybe notify whenever the doc changes (local + remote writes).
       _watchSub = inbox.watch().listen(_onDocEvent);
       await _refresh();
+      // Keep the node syncing when backgrounded (Android only; best-effort).
+      try {
+        await ForegroundService.start();
+      } catch (_) {}
     } catch (e) {
       setState(() => _error = e);
     } finally {

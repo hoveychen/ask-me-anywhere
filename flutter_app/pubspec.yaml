@@ -44,6 +44,7 @@ dependencies:
       path: packages/genui
   qr_flutter: ^4.1.0
   flutter_local_notifications: ^21.0.0
+  mobile_scanner: ^7.2.0
 
 dev_dependencies:
   flutter_test:
