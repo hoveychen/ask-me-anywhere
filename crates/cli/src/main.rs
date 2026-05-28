@@ -93,25 +93,25 @@ enum Command {
     Serve {
         /// Ticket of the inbox to push into. The server joins once at startup
         /// and reuses the same embedded node for the process lifetime.
-        #[arg(long)]
+        #[arg(long, env = "AMA_TICKET")]
         ticket: String,
         /// TCP address to bind, e.g. `127.0.0.1:8080` or `0.0.0.0:8080`.
-        #[arg(long, default_value = "127.0.0.1:8080")]
+        #[arg(long, env = "AMA_BIND", default_value = "127.0.0.1:8080")]
         bind: String,
         /// Default `source` stamped on incoming cards that omit it.
-        #[arg(long, default_value = "webhook")]
+        #[arg(long, env = "AMA_NAME", default_value = "webhook")]
         name: String,
         /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
-        #[arg(long)]
+        #[arg(long, env = "AMA_RELAY")]
         relay: Option<String>,
         /// Inline bearer token required on POST routes (`/push`, `/github/pr`).
         /// Mutually exclusive with `--token-file`. When neither is set the
         /// server runs OPEN (logged at startup).
-        #[arg(long, conflicts_with = "token_file")]
+        #[arg(long, env = "AMA_TOKEN", conflicts_with = "token_file")]
         token: Option<String>,
         /// Path to a file whose first line is the bearer token. Trailing
         /// whitespace is trimmed.
-        #[arg(long)]
+        #[arg(long, env = "AMA_TOKEN_FILE")]
         token_file: Option<String>,
     },
 }
