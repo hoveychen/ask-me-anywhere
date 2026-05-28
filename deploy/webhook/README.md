@@ -48,18 +48,30 @@ muveectl projects create \
 
 # Capture the PROJECT_ID and the hosted-git push URL.
 
-# 5. Set the secrets / config as env vars on the project.
-muveectl projects env PROJECT_ID set AMA_TICKET "doc..."   # the ticket
-muveectl projects env PROJECT_ID set AMA_TOKEN  "$(cat token.txt)"
-muveectl projects env PROJECT_ID set AMA_RELAY  "https://relay.muveeai.com"
+# 5. Wire the env vars through Muvee secrets. There's no direct `env set`
+#    subcommand — values live in the platform's secrets vault and bind to
+#    a project with --env-var. Repeat per variable; each `secrets create`
+#    prints a SECRET_ID you pass straight into bind-secret.
+muveectl secrets create --name AMA_TICKET --type password --value "doc..."
+muveectl projects bind-secret PROJECT_ID --secret-id <AMA_TICKET_SECRET_ID> --env-var AMA_TICKET
+muveectl secrets create --name AMA_TOKEN  --type password --value "$(cat token.txt)"
+muveectl projects bind-secret PROJECT_ID --secret-id <AMA_TOKEN_SECRET_ID>  --env-var AMA_TOKEN
+muveectl secrets create --name AMA_RELAY  --type password --value "https://relay.muveeai.com"
+muveectl projects bind-secret PROJECT_ID --secret-id <AMA_RELAY_SECRET_ID>  --env-var AMA_RELAY
 
-# 6. Push the workspace source (build context is the repo root).
-git push <PUSH_URL_FROM_STEP_4> HEAD:main
+# 6. Push the workspace source. `git push` needs a project-scoped token as
+#    the password (the session token does NOT work for hosted-git pushes).
+PROJECT_TOKEN="$(muveectl tokens create PROJECT_ID --name git-push | awk '/^Token:/{print $2}')"
+git push "https://x:${PROJECT_TOKEN}@muveeai.com/git/PROJECT_ID.git" main
 
 # 7. Build & deploy.
 muveectl projects deploy PROJECT_ID
 muveectl projects logs PROJECT_ID            # watch the build
-muveectl projects runtime-logs PROJECT_ID -f # watch the server come up
+muveectl projects runtime-logs PROJECT_ID --follow  # watch the server come up
+
+# Rotating a secret later: `muveectl secrets create` does not overwrite an
+# existing name, so unbind + delete + recreate + rebind, then `projects deploy`
+# (not just `restart` — restart keeps the old env) to pick up the new value.
 
 # 8. Verify end-to-end.
 HOST="https://webhook.muveeai.com"
