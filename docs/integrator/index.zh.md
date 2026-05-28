@@ -11,7 +11,7 @@
 
 A 是脚本胶,B 是常驻服务。两者都用同一个 [CardInput JSON 结构](#cardinput-json),所以你写一次"事件 → A2UI 卡片"的转换就能在两个面都用。
 
-## 1. `ama send` — 脚本一次性推送
+## 1. `ama send` — 脚本一次性推送 {#1-ama-send-脚本一次性推送}
 
 ```bash
 ama send \
@@ -45,7 +45,7 @@ curl -s https://api.example.com/event | jq '...' | \
 
 `ama send` 是一次性进程,它的 inbox 副本是内存里的(`MemStore`)。进程退出后这份副本就没了。因此 push 必须在退出前 **gossip 到至少一个 alive peer**(`--wait-secs` 控制这个窗口)。如果窗口太短而对端没在线,卡片丢失。要长期可靠,使用 `ama serve` 而不是 `ama send`。
 
-## 2. `ama serve` — 长跑 webhook 服务
+## 2. `ama serve` — 长跑 webhook 服务 {#2-ama-serve-长跑-webhook-服务}
 
 ```bash
 ama serve \

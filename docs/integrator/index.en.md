@@ -11,7 +11,7 @@ Two paths:
 
 A is the script glue, B is the daemon. Both consume the same [CardInput JSON shape](#cardinput-json), so the "event → A2UI card" transform you write once works on either surface.
 
-## 1. `ama send` — one-shot from a script
+## 1. `ama send` — one-shot from a script {#1-ama-send-one-shot-from-a-script}
 
 ```bash
 ama send \
@@ -45,7 +45,7 @@ curl -s https://api.example.com/event | jq '...' | \
 
 `ama send` is a one-shot process and its inbox replica is in-memory (`MemStore`). Once the process exits, that replica is gone. Push therefore needs to **gossip to at least one live peer before exit** (`--wait-secs` is that window). If the window is too short and no peer is online, the card is lost. For reliable delivery, use `ama serve` instead.
 
-## 2. `ama serve` — long-running webhook
+## 2. `ama serve` — long-running webhook {#2-ama-serve-long-running-webhook}
 
 ```bash
 ama serve \

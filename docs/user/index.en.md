@@ -71,7 +71,7 @@ On Android a *foreground service* keeps the iroh node alive while the app is bac
 - Back online: iroh re-aligns with whichever peers are reachable and fills in the gaps. CRDTs converge irrespective of ordering.
 - With a [self-hosted iroh-relay](../ops/index.md#relay-deploy) in the middle, NAT-traversal fallback runs over the relay. Traffic stays encrypted; the relay sees ciphertext only and doesn't store anything.
 
-## 3. FAQ
+## 3. FAQ {#3-faq}
 
 ### A card didn't arrive
 
