@@ -101,8 +101,11 @@ dependencies = [
  "futures-lite",
  "iroh",
  "qrcode",
+ "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
