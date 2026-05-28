@@ -341,6 +341,8 @@ fn build_router(state: ServerState) -> Router {
         .route("/cards/{id}/data/{*path}", http_get(get_data_handler))
         // SSE stream for live state/data updates (M6 P2). Filters by card_id.
         .route("/events", http_get(events_handler))
+        // Blocking ask: push + wait for state change in one HTTP call (M6 P3).
+        .route("/ask", post(ask_handler))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
     public.merge(authed)
@@ -475,6 +477,138 @@ async fn get_data_handler(
         .map_err(|e| ApiError::internal(format!("get_data: {e:#}")))?
         .map(Json)
         .ok_or_else(ApiError::not_found)
+}
+
+/// Body of `POST /ask`. Extends [`CardInput`] with an optional timeout for
+/// the blocking wait; on timeout the response is `200 { timed_out: true,
+/// id }` so the client can `GET /cards/{id}` later.
+#[derive(Debug, Deserialize)]
+struct AskInput {
+    summary: String,
+    #[serde(default)]
+    a2ui: Option<serde_json::Value>,
+    #[serde(default)]
+    source: Option<String>,
+    /// Max seconds to wait for the card to be actioned or dismissed.
+    /// Defaults to 60. Cap is enforced at 600 (Cloudflare / Traefik typically
+    /// kill idle HTTP connections around 100s, but local / direct setups can
+    /// hold longer).
+    #[serde(default = "default_ask_timeout")]
+    timeout_secs: u64,
+}
+
+fn default_ask_timeout() -> u64 {
+    60
+}
+
+impl AskInput {
+    fn into_card_input(self) -> CardInput {
+        CardInput {
+            summary: self.summary,
+            a2ui: self.a2ui,
+            source: self.source,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct AskResponse {
+    id: String,
+    /// True when no action came in within `timeout_secs`. The card is still
+    /// durable in the webhook's replica; the client can poll
+    /// `GET /cards/{id}` later to pick the answer up when it arrives.
+    timed_out: bool,
+    /// Final MessageState (status + action_name + action_context + ts).
+    /// Present iff `timed_out == false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<MessageState>,
+    /// Bound data-model values at the moment the card reached its final
+    /// state. Empty when timed out.
+    #[serde(default)]
+    data: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// `POST /ask` — push a card AND wait for the user to action or dismiss it,
+/// returning the resolved state in one HTTP call. Closest to the
+/// "ask, get answer" semantic the project name implies.
+///
+/// Timing: the subscription is established BEFORE the push, so the
+/// InsertLocal event for the eventual state write is guaranteed not to be
+/// lost in the gap.
+async fn ask_handler(
+    State(state): State<ServerState>,
+    Json(input): Json<AskInput>,
+) -> Result<Json<AskResponse>, ApiError> {
+    let timeout_secs = input.timeout_secs.min(600);
+    let card = input.into_card_input().into_card(&state.default_source);
+    let id = card.id.clone();
+
+    let events = state
+        .inbox
+        .subscribe()
+        .await
+        .map_err(|e| ApiError::internal(format!("subscribe: {e:#}")))?;
+
+    state
+        .inbox
+        .push(&card)
+        .await
+        .map_err(|e| ApiError::internal(format!("push: {e:#}")))?;
+    eprintln!("/ask -> [{}] {}  (waiting up to {timeout_secs}s)", card.id, card.summary);
+
+    let final_state = wait_for_final_state(events, &state.inbox, &id, Duration::from_secs(timeout_secs)).await;
+    let resp = match final_state {
+        Some(s) => {
+            let data = state
+                .inbox
+                .list_data(&id)
+                .await
+                .unwrap_or_default();
+            AskResponse { id, timed_out: false, state: Some(s), data }
+        }
+        None => AskResponse {
+            id,
+            timed_out: true,
+            state: None,
+            data: Default::default(),
+        },
+    };
+    Ok(Json(resp))
+}
+
+/// Pull events until we see a `state/<id>` write whose status is no longer
+/// `Unread`, or `budget` elapses. Returns the resolved [`MessageState`] on
+/// the success path, `None` on timeout.
+async fn wait_for_final_state(
+    events: impl futures_lite::Stream<Item = Result<LiveEvent>> + Unpin,
+    inbox: &Inbox,
+    target_id: &str,
+    budget: Duration,
+) -> Option<MessageState> {
+    let mut events = events;
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let next = tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return None,
+            ev = events.next() => ev,
+        };
+        let entry = match next {
+            Some(Ok(LiveEvent::InsertLocal { entry })) => entry,
+            Some(Ok(LiveEvent::InsertRemote { entry, .. })) => entry,
+            Some(Ok(_)) => continue,
+            Some(Err(_)) => continue,
+            None => return None,
+        };
+        let key = String::from_utf8_lossy(entry.key()).to_string();
+        let Some(KeyKind::State { id }) = parse_key(&key) else { continue };
+        if id != target_id {
+            continue;
+        }
+        let Ok(Some(state)) = inbox.get_state(&id).await else { continue };
+        if !matches!(state.status, Status::Unread) {
+            return Some(state);
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1354,6 +1488,96 @@ mod tests {
             !buf.contains("card-other"),
             "card-other leaked into card-want stream:\n{buf}"
         );
+    }
+
+    async fn post_json(router: &Router, path: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router oneshot");
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn ask_returns_actioned_state_when_user_acts_before_timeout() {
+        let (router, inbox) = local_router_state().await;
+
+        // Drive the inbox concurrently: shortly after /ask subscribes + pushes,
+        // simulate a device side recording an action on whatever card just landed.
+        let acting_inbox = inbox.clone();
+        tokio::spawn(async move {
+            // Discover the freshly-pushed card id by polling list_messages.
+            let id = loop {
+                let cards = acting_inbox.list_messages().await.unwrap();
+                if let Some(c) = cards.into_iter().next() {
+                    break c.id;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+            acting_inbox
+                .set_data(&id, "/note", &serde_json::json!("looks good"))
+                .await
+                .unwrap();
+            acting_inbox
+                .record_action(&id, "approve", Some(serde_json::json!({"by": "test"})))
+                .await
+                .unwrap();
+        });
+
+        let (status, body) = post_json(
+            &router,
+            "/ask",
+            serde_json::json!({
+                "summary": "approve?",
+                "timeout_secs": 5
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["timed_out"], false);
+        assert_eq!(body["state"]["status"], "actioned");
+        assert_eq!(body["state"]["action_name"], "approve");
+        assert_eq!(body["state"]["action_context"]["by"], "test");
+        assert_eq!(body["data"]["/note"], "looks good");
+        assert!(body["id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn ask_times_out_when_no_action_arrives() {
+        let (router, _inbox) = local_router_state().await;
+        let (status, body) = post_json(
+            &router,
+            "/ask",
+            serde_json::json!({"summary": "no one will answer", "timeout_secs": 1}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["timed_out"], true);
+        assert!(body["id"].is_string());
+        // No state field when timed out.
+        assert!(body["state"].is_null() || body.get("state").is_none());
+    }
+
+    #[tokio::test]
+    async fn ask_default_timeout_is_60s_when_field_absent() {
+        // Use a body without timeout_secs and verify the field defaults to 60
+        // by re-deserializing through AskInput directly (cheap, doesn't sit
+        // for 60 seconds).
+        let parsed: AskInput =
+            serde_json::from_str(r#"{"summary":"x"}"#).unwrap();
+        assert_eq!(parsed.timeout_secs, 60);
     }
 
     #[tokio::test]
