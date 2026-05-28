@@ -21,12 +21,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, MessageState, RelayChoice, Status};
+use ama_core::{
+    build_endpoint, now_ms, parse_key, Inbox, KeyKind, LiveEvent, MessageCard, MessageState,
+    RelayChoice, Status,
+};
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     middleware::{from_fn_with_state, Next},
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get as http_get, post},
     Json, Router,
 };
@@ -333,6 +339,8 @@ fn build_router(state: ServerState) -> Router {
         .route("/cards/{id}", http_get(get_card_handler))
         .route("/cards/{id}/state", http_get(get_state_handler))
         .route("/cards/{id}/data/{*path}", http_get(get_data_handler))
+        // SSE stream for live state/data updates (M6 P2). Filters by card_id.
+        .route("/events", http_get(events_handler))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
     public.merge(authed)
@@ -467,6 +475,85 @@ async fn get_data_handler(
         .map_err(|e| ApiError::internal(format!("get_data: {e:#}")))?
         .map(Json)
         .ok_or_else(ApiError::not_found)
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    /// Filter to events touching this card id. Required — without it the
+    /// stream would broadcast every state/data write on the inbox, which is
+    /// rarely what the integrator wants and leaks unrelated cards.
+    card_id: String,
+}
+
+/// `GET /events?card_id=<id>` — SSE stream of `state` and `data` events for
+/// a single card. Each event has the resolved value as its JSON payload
+/// (the same shape the polling endpoints return), so a client never has to
+/// follow up with a separate read.
+///
+/// SSE event types:
+///   - `state` → MessageState JSON
+///   - `data`  → `{ "bind_path": "/note", "value": "ok" }`
+///
+/// A keep-alive comment is sent every 15s so middleboxes (Cloudflare, k8s
+/// ingress) don't reap idle long-poll connections. The subscription is
+/// dropped automatically when the client disconnects (axum cancels the
+/// response future, and the LiveEvent stream is owned by it).
+async fn events_handler(
+    State(state): State<ServerState>,
+    Query(params): Query<EventsQuery>,
+) -> Result<Sse<impl futures_lite::Stream<Item = std::result::Result<Event, std::convert::Infallible>>>, ApiError>
+{
+    let events = state
+        .inbox
+        .subscribe()
+        .await
+        .map_err(|e| ApiError::internal(format!("subscribe: {e:#}")))?;
+    let inbox = state.inbox.clone();
+    let card_id = params.card_id;
+
+    let stream = futures_lite::stream::unfold(
+        (events, inbox, card_id),
+        |(mut events, inbox, card_id)| async move {
+            loop {
+                let ev = events.next().await?;
+                let entry = match ev {
+                    Ok(LiveEvent::InsertRemote { entry, .. })
+                    | Ok(LiveEvent::InsertLocal { entry }) => entry,
+                    Ok(_) => continue,
+                    Err(_) => continue,
+                };
+                let key = String::from_utf8_lossy(entry.key()).to_string();
+                let Some(kind) = parse_key(&key) else { continue };
+                let sse_event = match kind {
+                    KeyKind::State { id } if id == card_id => match inbox.get_state(&id).await {
+                        Ok(Some(state)) => Event::default()
+                            .event("state")
+                            .json_data(&state)
+                            .ok(),
+                        _ => None,
+                    },
+                    KeyKind::Data { id, bind_path } if id == card_id => {
+                        match inbox.get_data(&id, &bind_path).await {
+                            Ok(Some(value)) => Event::default()
+                                .event("data")
+                                .json_data(serde_json::json!({
+                                    "bind_path": bind_path,
+                                    "value": value,
+                                }))
+                                .ok(),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(ev) = sse_event {
+                    return Some((Ok(ev), (events, inbox, card_id)));
+                }
+            }
+        },
+    );
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 /// Minimal subset of GitHub's `pull_request` webhook payload — only the
@@ -1116,6 +1203,157 @@ mod tests {
         // Missing bind path → 404.
         let (status, _) = get(&router, "/cards/card-d/data/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn events_streams_state_and_data_writes_for_one_card() {
+        use http_body_util::BodyExt;
+
+        let (router, inbox) = local_router_state().await;
+        // Pre-push the card so its id exists. The SSE only emits state / data
+        // events; we'll trigger those after the connection is established.
+        let card = MessageCard {
+            id: "card-stream".into(),
+            a2ui: serde_json::json!({}),
+            summary: "stream".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&card).await.expect("push");
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/events?card_id=card-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("sse oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        // Subscription is now live (the handler awaited subscribe() before
+        // returning the response). Trigger writes that should land as events.
+        let writer = inbox.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer.dismiss("card-stream").await.expect("dismiss");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer
+                .set_data("card-stream", "/note", &serde_json::json!("typed"))
+                .await
+                .expect("set_data");
+        });
+
+        // Pull frames until we've collected both expected SSE events, with
+        // a generous per-test timeout so a stall fails loudly instead of
+        // hanging CI.
+        let mut body = resp.into_body();
+        let mut buf = String::new();
+        let mut state_seen = false;
+        let mut data_seen = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !(state_seen && data_seen) {
+            let frame = tokio::time::timeout_at(deadline, body.frame())
+                .await
+                .expect("SSE stream stalled")
+                .expect("body stream ended early")
+                .expect("frame error");
+            if let Ok(data) = frame.into_data() {
+                buf.push_str(&String::from_utf8_lossy(&data));
+            }
+            if !state_seen && buf.contains("event: state") && buf.contains("\"action_name\":\"dismiss\"") {
+                state_seen = true;
+            }
+            if !data_seen && buf.contains("event: data") && buf.contains("\"bind_path\":\"/note\"") {
+                data_seen = true;
+            }
+        }
+        // Dropping `body` here drops the response future, which cancels the
+        // SSE handler's subscription — verifies the cleanup path implicitly.
+    }
+
+    #[tokio::test]
+    async fn events_ignores_other_card_writes() {
+        use http_body_util::BodyExt;
+
+        let (router, inbox) = local_router_state().await;
+        let want = MessageCard {
+            id: "card-want".into(),
+            a2ui: serde_json::json!({}),
+            summary: "want".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        let other = MessageCard {
+            id: "card-other".into(),
+            a2ui: serde_json::json!({}),
+            summary: "other".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&want).await.unwrap();
+        inbox.push(&other).await.unwrap();
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/events?card_id=card-want")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let writer = inbox.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Two writes on the OTHER card — these must NOT appear in our stream.
+            writer.dismiss("card-other").await.unwrap();
+            writer
+                .set_data("card-other", "/x", &serde_json::json!("noise"))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // One write on the wanted card — this is the only event we should see.
+            writer.dismiss("card-want").await.unwrap();
+        });
+
+        let mut body = resp.into_body();
+        let mut buf = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let frame = tokio::time::timeout_at(deadline, body.frame())
+                .await
+                .expect("SSE stream stalled")
+                .expect("body stream ended early")
+                .expect("frame error");
+            if let Ok(data) = frame.into_data() {
+                buf.push_str(&String::from_utf8_lossy(&data));
+            }
+            if buf.contains("event: state")
+                && buf.contains("\"action_name\":\"dismiss\"")
+                && buf.contains("\"msg_id\":\"card-want\"")
+            {
+                break;
+            }
+        }
+        // The noise events on card-other should be absent. The buffer up to
+        // the point we matched card-want's event must not mention card-other.
+        assert!(
+            !buf.contains("card-other"),
+            "card-other leaked into card-want stream:\n{buf}"
+        );
     }
 
     #[tokio::test]
