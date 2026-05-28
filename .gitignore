@@ -16,6 +16,9 @@ build/
 TASKS.md
 .worktrees/
 
+# MkDocs build output
+/site/
+
 # OS / editor
 .DS_Store
 *.log
