@@ -291,6 +291,17 @@ WARN sync: sync failed origin=Connect(DirectJoin) err=Failed to establish connec
 
 参考[使用者指南 FAQ](../user/index.md#3-常见问题)。
 
+### 5.6 SSE / `/ask` 长连接半路被砍 (M6)
+
+`GET /events` 与 `POST /ask` 都是**长 HTTP 连接** —— 中间盒(Cloudflare / Traefik / k8s ingress)默认会在 ~100s 静止后 reap。表现:客户端突然 EOF / 504,但 `ama serve` 这边日志正常,卡片也写入了。
+
+排查 + 规避:
+
+- SSE 已经内置 15s `: keep-alive` 注释,Cloudflare 等都识别,正常不会被砍。被砍多半是更激进的代理。
+- `/ask` 的 `timeout_secs` 把上限**设在 ≤ 90 秒**,在前置代理拍板之前自己先返。客户端拿到 `timed_out: true` 后跳 `GET /cards/{id}` 轮询继续等。
+- 客户端工具如果加了自己的 idle timeout(reqwest 默认 30s、curl 没限制),要按业务调大或关。
+- 如果代理是自己的,设 `proxy_read_timeout` / `read_timeout` 到 ≥ 期望最长 timeout_secs 的 1.5 倍。
+
 ---
 
 ## 6. 安全注意 {#安全}

@@ -292,6 +292,17 @@ Other causes:
 
 See the [User Guide FAQ](../user/index.md#3-faq).
 
+### 5.6 SSE / `/ask` long connections get cut (M6)
+
+`GET /events` and `POST /ask` are **long HTTP connections** — middleboxes (Cloudflare / Traefik / k8s ingress) typically reap them around 100s of idle. Symptom: client gets EOF / 504 unexpectedly, but `ama serve` shows no error and the card landed.
+
+Diagnose + work around:
+
+- SSE already injects a 15s `: keep-alive` comment. Cloudflare and friends honour it; cuts past that point usually mean a more aggressive proxy in the path.
+- Cap `/ask`'s `timeout_secs` at **≤ 90 seconds** so the server returns first; on `timed_out: true`, the client should switch to polling `GET /cards/{id}` to wait for a delayed answer.
+- If the client lib has its own idle timeout (reqwest defaults to 30s; curl has none), bump it or remove it.
+- If the proxy is yours, set `proxy_read_timeout` / `read_timeout` to ≥ 1.5× the longest expected `timeout_secs`.
+
 ---
 
 ## 6. Security notes {#security}

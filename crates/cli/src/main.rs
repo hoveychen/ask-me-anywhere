@@ -21,12 +21,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, RelayChoice, Status};
+use ama_core::{
+    build_endpoint, now_ms, parse_key, Inbox, KeyKind, LiveEvent, MessageCard, MessageState,
+    RelayChoice, Status,
+};
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     middleware::{from_fn_with_state, Next},
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get as http_get, post},
     Json, Router,
 };
@@ -328,6 +334,15 @@ fn build_router(state: ServerState) -> Router {
     let authed = Router::new()
         .route("/push", post(push_handler))
         .route("/github/pr", post(github_pr_handler))
+        // Answer-back read endpoints (M6 P1). `{*path}` is axum's wildcard
+        // capture, so /cards/abc/data/contact/email lands with path="contact/email".
+        .route("/cards/{id}", http_get(get_card_handler))
+        .route("/cards/{id}/state", http_get(get_state_handler))
+        .route("/cards/{id}/data/{*path}", http_get(get_data_handler))
+        // SSE stream for live state/data updates (M6 P2). Filters by card_id.
+        .route("/events", http_get(events_handler))
+        // Blocking ask: push + wait for state change in one HTTP call (M6 P3).
+        .route("/ask", post(ask_handler))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
     public.merge(authed)
@@ -393,6 +408,286 @@ async fn push_handler(
 #[derive(serde::Serialize)]
 struct PushResponse {
     id: String,
+}
+
+// ---- answer-back read endpoints (M6 P1) -----------------------------------
+
+/// `GET /cards/{id}` — full snapshot of a card: the immutable payload plus
+/// the current state and every bound data-model value. 404 if the card id
+/// has never been written to (locally or via gossip).
+async fn get_card_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<CardSnapshot>, ApiError> {
+    let card = state
+        .inbox
+        .get_message(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_message: {e:#}")))?
+        .ok_or_else(ApiError::not_found)?;
+    let card_state = state
+        .inbox
+        .get_state(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_state: {e:#}")))?;
+    let data = state
+        .inbox
+        .list_data(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("list_data: {e:#}")))?;
+    Ok(Json(CardSnapshot { card, state: card_state, data }))
+}
+
+#[derive(serde::Serialize)]
+struct CardSnapshot {
+    card: MessageCard,
+    state: Option<MessageState>,
+    data: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// `GET /cards/{id}/state` — just the [`MessageState`] (status, action_name,
+/// action_context, device, ts). 404 if the card has no state entry yet
+/// (i.e. no action has been taken).
+async fn get_state_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<MessageState>, ApiError> {
+    state
+        .inbox
+        .get_state(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_state: {e:#}")))?
+        .map(Json)
+        .ok_or_else(ApiError::not_found)
+}
+
+/// `GET /cards/{id}/data/{*path}` — single bound value (e.g. `/cards/abc/data/note`
+/// returns the value at bind_path `/note`). 404 if that bind_path was never
+/// written. axum's `{*path}` strips the leading slash; we add it back to
+/// match the [`crate::ama_core::data_key`] convention.
+async fn get_data_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path((id, path)): axum::extract::Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let bind_path = format!("/{path}");
+    state
+        .inbox
+        .get_data(&id, &bind_path)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_data: {e:#}")))?
+        .map(Json)
+        .ok_or_else(ApiError::not_found)
+}
+
+/// Body of `POST /ask`. Extends [`CardInput`] with an optional timeout for
+/// the blocking wait; on timeout the response is `200 { timed_out: true,
+/// id }` so the client can `GET /cards/{id}` later.
+#[derive(Debug, Deserialize)]
+struct AskInput {
+    summary: String,
+    #[serde(default)]
+    a2ui: Option<serde_json::Value>,
+    #[serde(default)]
+    source: Option<String>,
+    /// Max seconds to wait for the card to be actioned or dismissed.
+    /// Defaults to 60. Cap is enforced at 600 (Cloudflare / Traefik typically
+    /// kill idle HTTP connections around 100s, but local / direct setups can
+    /// hold longer).
+    #[serde(default = "default_ask_timeout")]
+    timeout_secs: u64,
+}
+
+fn default_ask_timeout() -> u64 {
+    60
+}
+
+impl AskInput {
+    fn into_card_input(self) -> CardInput {
+        CardInput {
+            summary: self.summary,
+            a2ui: self.a2ui,
+            source: self.source,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct AskResponse {
+    id: String,
+    /// True when no action came in within `timeout_secs`. The card is still
+    /// durable in the webhook's replica; the client can poll
+    /// `GET /cards/{id}` later to pick the answer up when it arrives.
+    timed_out: bool,
+    /// Final MessageState (status + action_name + action_context + ts).
+    /// Present iff `timed_out == false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<MessageState>,
+    /// Bound data-model values at the moment the card reached its final
+    /// state. Empty when timed out.
+    #[serde(default)]
+    data: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// `POST /ask` — push a card AND wait for the user to action or dismiss it,
+/// returning the resolved state in one HTTP call. Closest to the
+/// "ask, get answer" semantic the project name implies.
+///
+/// Timing: the subscription is established BEFORE the push, so the
+/// InsertLocal event for the eventual state write is guaranteed not to be
+/// lost in the gap.
+async fn ask_handler(
+    State(state): State<ServerState>,
+    Json(input): Json<AskInput>,
+) -> Result<Json<AskResponse>, ApiError> {
+    let timeout_secs = input.timeout_secs.min(600);
+    let card = input.into_card_input().into_card(&state.default_source);
+    let id = card.id.clone();
+
+    let events = state
+        .inbox
+        .subscribe()
+        .await
+        .map_err(|e| ApiError::internal(format!("subscribe: {e:#}")))?;
+
+    state
+        .inbox
+        .push(&card)
+        .await
+        .map_err(|e| ApiError::internal(format!("push: {e:#}")))?;
+    eprintln!("/ask -> [{}] {}  (waiting up to {timeout_secs}s)", card.id, card.summary);
+
+    let final_state = wait_for_final_state(events, &state.inbox, &id, Duration::from_secs(timeout_secs)).await;
+    let resp = match final_state {
+        Some(s) => {
+            let data = state
+                .inbox
+                .list_data(&id)
+                .await
+                .unwrap_or_default();
+            AskResponse { id, timed_out: false, state: Some(s), data }
+        }
+        None => AskResponse {
+            id,
+            timed_out: true,
+            state: None,
+            data: Default::default(),
+        },
+    };
+    Ok(Json(resp))
+}
+
+/// Pull events until we see a `state/<id>` write whose status is no longer
+/// `Unread`, or `budget` elapses. Returns the resolved [`MessageState`] on
+/// the success path, `None` on timeout.
+async fn wait_for_final_state(
+    events: impl futures_lite::Stream<Item = Result<LiveEvent>> + Unpin,
+    inbox: &Inbox,
+    target_id: &str,
+    budget: Duration,
+) -> Option<MessageState> {
+    let mut events = events;
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let next = tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return None,
+            ev = events.next() => ev,
+        };
+        let entry = match next {
+            Some(Ok(LiveEvent::InsertLocal { entry })) => entry,
+            Some(Ok(LiveEvent::InsertRemote { entry, .. })) => entry,
+            Some(Ok(_)) => continue,
+            Some(Err(_)) => continue,
+            None => return None,
+        };
+        let key = String::from_utf8_lossy(entry.key()).to_string();
+        let Some(KeyKind::State { id }) = parse_key(&key) else { continue };
+        if id != target_id {
+            continue;
+        }
+        let Ok(Some(state)) = inbox.get_state(&id).await else { continue };
+        if !matches!(state.status, Status::Unread) {
+            return Some(state);
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    /// Filter to events touching this card id. Required — without it the
+    /// stream would broadcast every state/data write on the inbox, which is
+    /// rarely what the integrator wants and leaks unrelated cards.
+    card_id: String,
+}
+
+/// `GET /events?card_id=<id>` — SSE stream of `state` and `data` events for
+/// a single card. Each event has the resolved value as its JSON payload
+/// (the same shape the polling endpoints return), so a client never has to
+/// follow up with a separate read.
+///
+/// SSE event types:
+///   - `state` → MessageState JSON
+///   - `data`  → `{ "bind_path": "/note", "value": "ok" }`
+///
+/// A keep-alive comment is sent every 15s so middleboxes (Cloudflare, k8s
+/// ingress) don't reap idle long-poll connections. The subscription is
+/// dropped automatically when the client disconnects (axum cancels the
+/// response future, and the LiveEvent stream is owned by it).
+async fn events_handler(
+    State(state): State<ServerState>,
+    Query(params): Query<EventsQuery>,
+) -> Result<Sse<impl futures_lite::Stream<Item = std::result::Result<Event, std::convert::Infallible>>>, ApiError>
+{
+    let events = state
+        .inbox
+        .subscribe()
+        .await
+        .map_err(|e| ApiError::internal(format!("subscribe: {e:#}")))?;
+    let inbox = state.inbox.clone();
+    let card_id = params.card_id;
+
+    let stream = futures_lite::stream::unfold(
+        (events, inbox, card_id),
+        |(mut events, inbox, card_id)| async move {
+            loop {
+                let ev = events.next().await?;
+                let entry = match ev {
+                    Ok(LiveEvent::InsertRemote { entry, .. })
+                    | Ok(LiveEvent::InsertLocal { entry }) => entry,
+                    Ok(_) => continue,
+                    Err(_) => continue,
+                };
+                let key = String::from_utf8_lossy(entry.key()).to_string();
+                let Some(kind) = parse_key(&key) else { continue };
+                let sse_event = match kind {
+                    KeyKind::State { id } if id == card_id => match inbox.get_state(&id).await {
+                        Ok(Some(state)) => Event::default()
+                            .event("state")
+                            .json_data(&state)
+                            .ok(),
+                        _ => None,
+                    },
+                    KeyKind::Data { id, bind_path } if id == card_id => {
+                        match inbox.get_data(&id, &bind_path).await {
+                            Ok(Some(value)) => Event::default()
+                                .event("data")
+                                .json_data(serde_json::json!({
+                                    "bind_path": bind_path,
+                                    "value": value,
+                                }))
+                                .ok(),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(ev) = sse_event {
+                    return Some((Ok(ev), (events, inbox, card_id)));
+                }
+            }
+        },
+    );
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
 /// Minimal subset of GitHub's `pull_request` webhook payload — only the
@@ -511,6 +806,9 @@ impl ApiError {
     }
     fn unauthorized() -> Self {
         Self { status: StatusCode::UNAUTHORIZED, body: "unauthorized".into() }
+    }
+    fn not_found() -> Self {
+        Self { status: StatusCode::NOT_FOUND, body: "not found".into() }
     }
 }
 
@@ -914,5 +1212,416 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    // ---- M6 P1: answer-back read endpoints --------------------------------
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use iroh::{endpoint::presets, Endpoint, RelayMode};
+    use tower::util::ServiceExt;
+
+    /// Spin up a local-only Inbox + a router with no token configured.
+    /// `presets::Minimal` + `RelayMode::Disabled` skips n0 relay/discovery
+    /// so the test is fully offline and deterministic.
+    async fn local_router_state() -> (Router, Arc<Inbox>) {
+        let ep = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("bind endpoint");
+        let inbox = Arc::new(Inbox::create(ep, "test").await.expect("create inbox"));
+        let state = ServerState {
+            inbox: inbox.clone(),
+            default_source: Arc::new("test".into()),
+            token: None,
+        };
+        (build_router(state), inbox)
+    }
+
+    async fn get(router: &Router, path: &str) -> (StatusCode, serde_json::Value) {
+        let resp = router
+            .clone()
+            .oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap())
+            .await
+            .expect("router oneshot");
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+            })
+        };
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn get_card_returns_full_snapshot() {
+        let (router, inbox) = local_router_state().await;
+        let card = MessageCard {
+            id: "card-snap".into(),
+            a2ui: serde_json::json!({ "kind": "Text" }),
+            summary: "snap".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&card).await.expect("push");
+        inbox.record_action("card-snap", "approve", Some(serde_json::json!({"by":"alice"})))
+            .await
+            .expect("record_action");
+        inbox.set_data("card-snap", "/note", &serde_json::json!("ok"))
+            .await
+            .expect("set_data");
+
+        let (status, body) = get(&router, "/cards/card-snap").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["card"]["id"], "card-snap");
+        assert_eq!(body["state"]["action_name"], "approve");
+        assert_eq!(body["state"]["action_context"]["by"], "alice");
+        assert_eq!(body["data"]["/note"], "ok");
+    }
+
+    #[tokio::test]
+    async fn get_card_404_when_unknown() {
+        let (router, _) = local_router_state().await;
+        let (status, _) = get(&router, "/cards/never-pushed").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_state_returns_just_state_or_404() {
+        let (router, inbox) = local_router_state().await;
+        let card = MessageCard {
+            id: "card-s".into(),
+            a2ui: serde_json::json!({}),
+            summary: "s".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&card).await.expect("push");
+        // 404 before any state write — card exists but state/<id> doesn't.
+        let (status, _) = get(&router, "/cards/card-s/state").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // After dismiss, state lands and the route returns it.
+        inbox.dismiss("card-s").await.expect("dismiss");
+        let (status, body) = get(&router, "/cards/card-s/state").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "dismissed");
+        assert_eq!(body["action_name"], "dismiss");
+    }
+
+    #[tokio::test]
+    async fn get_data_returns_value_at_bind_path() {
+        let (router, inbox) = local_router_state().await;
+        inbox.push(&MessageCard {
+            id: "card-d".into(),
+            a2ui: serde_json::json!({}),
+            summary: "d".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        }).await.unwrap();
+        inbox.set_data("card-d", "/score", &serde_json::json!(7)).await.unwrap();
+        inbox.set_data("card-d", "/contact/email", &serde_json::json!("a@b.c")).await.unwrap();
+
+        let (status, body) = get(&router, "/cards/card-d/data/score").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!(7));
+
+        // Nested bind path with multiple segments (axum {*path} wildcard).
+        let (status, body) = get(&router, "/cards/card-d/data/contact/email").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!("a@b.c"));
+
+        // Missing bind path → 404.
+        let (status, _) = get(&router, "/cards/card-d/data/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn events_streams_state_and_data_writes_for_one_card() {
+        use http_body_util::BodyExt;
+
+        let (router, inbox) = local_router_state().await;
+        // Pre-push the card so its id exists. The SSE only emits state / data
+        // events; we'll trigger those after the connection is established.
+        let card = MessageCard {
+            id: "card-stream".into(),
+            a2ui: serde_json::json!({}),
+            summary: "stream".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&card).await.expect("push");
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/events?card_id=card-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("sse oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        // Subscription is now live (the handler awaited subscribe() before
+        // returning the response). Trigger writes that should land as events.
+        let writer = inbox.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer.dismiss("card-stream").await.expect("dismiss");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer
+                .set_data("card-stream", "/note", &serde_json::json!("typed"))
+                .await
+                .expect("set_data");
+        });
+
+        // Pull frames until we've collected both expected SSE events, with
+        // a generous per-test timeout so a stall fails loudly instead of
+        // hanging CI.
+        let mut body = resp.into_body();
+        let mut buf = String::new();
+        let mut state_seen = false;
+        let mut data_seen = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !(state_seen && data_seen) {
+            let frame = tokio::time::timeout_at(deadline, body.frame())
+                .await
+                .expect("SSE stream stalled")
+                .expect("body stream ended early")
+                .expect("frame error");
+            if let Ok(data) = frame.into_data() {
+                buf.push_str(&String::from_utf8_lossy(&data));
+            }
+            if !state_seen && buf.contains("event: state") && buf.contains("\"action_name\":\"dismiss\"") {
+                state_seen = true;
+            }
+            if !data_seen && buf.contains("event: data") && buf.contains("\"bind_path\":\"/note\"") {
+                data_seen = true;
+            }
+        }
+        // Dropping `body` here drops the response future, which cancels the
+        // SSE handler's subscription — verifies the cleanup path implicitly.
+    }
+
+    #[tokio::test]
+    async fn events_ignores_other_card_writes() {
+        use http_body_util::BodyExt;
+
+        let (router, inbox) = local_router_state().await;
+        let want = MessageCard {
+            id: "card-want".into(),
+            a2ui: serde_json::json!({}),
+            summary: "want".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        let other = MessageCard {
+            id: "card-other".into(),
+            a2ui: serde_json::json!({}),
+            summary: "other".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&want).await.unwrap();
+        inbox.push(&other).await.unwrap();
+
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/events?card_id=card-want")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let writer = inbox.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Two writes on the OTHER card — these must NOT appear in our stream.
+            writer.dismiss("card-other").await.unwrap();
+            writer
+                .set_data("card-other", "/x", &serde_json::json!("noise"))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // One write on the wanted card — this is the only event we should see.
+            writer.dismiss("card-want").await.unwrap();
+        });
+
+        let mut body = resp.into_body();
+        let mut buf = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let frame = tokio::time::timeout_at(deadline, body.frame())
+                .await
+                .expect("SSE stream stalled")
+                .expect("body stream ended early")
+                .expect("frame error");
+            if let Ok(data) = frame.into_data() {
+                buf.push_str(&String::from_utf8_lossy(&data));
+            }
+            if buf.contains("event: state")
+                && buf.contains("\"action_name\":\"dismiss\"")
+                && buf.contains("\"msg_id\":\"card-want\"")
+            {
+                break;
+            }
+        }
+        // The noise events on card-other should be absent. The buffer up to
+        // the point we matched card-want's event must not mention card-other.
+        assert!(
+            !buf.contains("card-other"),
+            "card-other leaked into card-want stream:\n{buf}"
+        );
+    }
+
+    async fn post_json(router: &Router, path: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("router oneshot");
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn ask_returns_actioned_state_when_user_acts_before_timeout() {
+        let (router, inbox) = local_router_state().await;
+
+        // Drive the inbox concurrently: shortly after /ask subscribes + pushes,
+        // simulate a device side recording an action on whatever card just landed.
+        let acting_inbox = inbox.clone();
+        tokio::spawn(async move {
+            // Discover the freshly-pushed card id by polling list_messages.
+            let id = loop {
+                let cards = acting_inbox.list_messages().await.unwrap();
+                if let Some(c) = cards.into_iter().next() {
+                    break c.id;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            };
+            acting_inbox
+                .set_data(&id, "/note", &serde_json::json!("looks good"))
+                .await
+                .unwrap();
+            acting_inbox
+                .record_action(&id, "approve", Some(serde_json::json!({"by": "test"})))
+                .await
+                .unwrap();
+        });
+
+        let (status, body) = post_json(
+            &router,
+            "/ask",
+            serde_json::json!({
+                "summary": "approve?",
+                "timeout_secs": 5
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["timed_out"], false);
+        assert_eq!(body["state"]["status"], "actioned");
+        assert_eq!(body["state"]["action_name"], "approve");
+        assert_eq!(body["state"]["action_context"]["by"], "test");
+        assert_eq!(body["data"]["/note"], "looks good");
+        assert!(body["id"].is_string());
+    }
+
+    #[tokio::test]
+    async fn ask_times_out_when_no_action_arrives() {
+        let (router, _inbox) = local_router_state().await;
+        let (status, body) = post_json(
+            &router,
+            "/ask",
+            serde_json::json!({"summary": "no one will answer", "timeout_secs": 1}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["timed_out"], true);
+        assert!(body["id"].is_string());
+        // No state field when timed out.
+        assert!(body["state"].is_null() || body.get("state").is_none());
+    }
+
+    #[tokio::test]
+    async fn ask_default_timeout_is_60s_when_field_absent() {
+        // Use a body without timeout_secs and verify the field defaults to 60
+        // by re-deserializing through AskInput directly (cheap, doesn't sit
+        // for 60 seconds).
+        let parsed: AskInput =
+            serde_json::from_str(r#"{"summary":"x"}"#).unwrap();
+        assert_eq!(parsed.timeout_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn read_endpoints_require_token_when_configured() {
+        let ep = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let inbox = Arc::new(Inbox::create(ep, "test").await.unwrap());
+        let state = ServerState {
+            inbox: inbox.clone(),
+            default_source: Arc::new("test".into()),
+            token: Some(Arc::new("s3cr3t".into())),
+        };
+        let router = build_router(state);
+
+        // No Authorization header → 401.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/cards/any")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // With the right token → 404 (no card pushed yet) but routes through auth.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/cards/any")
+                    .header(AUTHORIZATION, "Bearer s3cr3t")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

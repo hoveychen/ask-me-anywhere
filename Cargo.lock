@@ -100,6 +100,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-lite",
+ "http-body-util",
  "iroh",
  "qrcode",
  "serde",
