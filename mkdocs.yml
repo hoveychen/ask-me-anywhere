@@ -1,0 +1,91 @@
+site_name: ask-me-anywhere
+site_description: 多设备 actionable 消息卡片网络 · Multi-device actionable message card network
+site_url: https://hoveychen.github.io/ask-me-anywhere/
+repo_url: https://github.com/hoveychen/ask-me-anywhere
+repo_name: hoveychen/ask-me-anywhere
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: zh
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: 切换深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: 切换浅色模式
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: zh
+          default: true
+          name: 中文
+          build: true
+        - locale: en
+          name: English
+          build: true
+          nav_translations:
+            首页: Home
+            使用者: User Guide
+            集成者: Integrator Guide
+            运维: Operator Guide
+            参考: Reference
+
+nav:
+  - 首页: index.md
+  - 使用者:
+      - 介绍: user/index.md
+  - 集成者:
+      - 介绍: integrator/index.md
+  - 运维:
+      - 介绍: ops/index.md
+  - 参考:
+      - iroh-docs 0.98 API: reference/iroh-docs-0.98-api.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
