@@ -239,6 +239,33 @@ impl Inbox {
         }
     }
 
+    /// Read every bound data-model value for a card as a `bind_path → value`
+    /// map. Used by the answer-back HTTP read path so a single GET returns
+    /// the whole form state.
+    pub async fn list_data(
+        &self,
+        id: &str,
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>> {
+        // Trailing `/` so card id "abc" does NOT prefix-match "abc-other".
+        let prefix = format!("data/{id}/");
+        let query = Query::single_latest_per_key().key_prefix(&prefix);
+        let stream = self.doc.get_many(query).await?;
+        tokio::pin!(stream);
+        let mut out = std::collections::HashMap::new();
+        while let Some(entry) = stream.next().await {
+            let entry = entry?;
+            let key = String::from_utf8_lossy(entry.key()).to_string();
+            // `key` is `data/<id><bind_path>`; everything after the id-prefix
+            // is the bind_path, leading slash included (matches data_key).
+            let Some(bind_path) = key.strip_prefix(&format!("data/{id}")) else {
+                continue;
+            };
+            let value: serde_json::Value = self.decode_entry(&entry).await?;
+            out.insert(bind_path.to_string(), value);
+        }
+        Ok(out)
+    }
+
     // ---- sync / lifecycle -------------------------------------------------
 
     /// Subscribe to live document events (inserts, content-ready, neighbor

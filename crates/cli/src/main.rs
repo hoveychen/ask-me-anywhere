@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, RelayChoice, Status};
+use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, MessageState, RelayChoice, Status};
 use axum::{
     extract::State,
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
@@ -328,6 +328,11 @@ fn build_router(state: ServerState) -> Router {
     let authed = Router::new()
         .route("/push", post(push_handler))
         .route("/github/pr", post(github_pr_handler))
+        // Answer-back read endpoints (M6 P1). `{*path}` is axum's wildcard
+        // capture, so /cards/abc/data/contact/email lands with path="contact/email".
+        .route("/cards/{id}", http_get(get_card_handler))
+        .route("/cards/{id}/state", http_get(get_state_handler))
+        .route("/cards/{id}/data/{*path}", http_get(get_data_handler))
         .layer(from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state);
     public.merge(authed)
@@ -393,6 +398,75 @@ async fn push_handler(
 #[derive(serde::Serialize)]
 struct PushResponse {
     id: String,
+}
+
+// ---- answer-back read endpoints (M6 P1) -----------------------------------
+
+/// `GET /cards/{id}` — full snapshot of a card: the immutable payload plus
+/// the current state and every bound data-model value. 404 if the card id
+/// has never been written to (locally or via gossip).
+async fn get_card_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<CardSnapshot>, ApiError> {
+    let card = state
+        .inbox
+        .get_message(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_message: {e:#}")))?
+        .ok_or_else(ApiError::not_found)?;
+    let card_state = state
+        .inbox
+        .get_state(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_state: {e:#}")))?;
+    let data = state
+        .inbox
+        .list_data(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("list_data: {e:#}")))?;
+    Ok(Json(CardSnapshot { card, state: card_state, data }))
+}
+
+#[derive(serde::Serialize)]
+struct CardSnapshot {
+    card: MessageCard,
+    state: Option<MessageState>,
+    data: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// `GET /cards/{id}/state` — just the [`MessageState`] (status, action_name,
+/// action_context, device, ts). 404 if the card has no state entry yet
+/// (i.e. no action has been taken).
+async fn get_state_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<MessageState>, ApiError> {
+    state
+        .inbox
+        .get_state(&id)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_state: {e:#}")))?
+        .map(Json)
+        .ok_or_else(ApiError::not_found)
+}
+
+/// `GET /cards/{id}/data/{*path}` — single bound value (e.g. `/cards/abc/data/note`
+/// returns the value at bind_path `/note`). 404 if that bind_path was never
+/// written. axum's `{*path}` strips the leading slash; we add it back to
+/// match the [`crate::ama_core::data_key`] convention.
+async fn get_data_handler(
+    State(state): State<ServerState>,
+    axum::extract::Path((id, path)): axum::extract::Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let bind_path = format!("/{path}");
+    state
+        .inbox
+        .get_data(&id, &bind_path)
+        .await
+        .map_err(|e| ApiError::internal(format!("get_data: {e:#}")))?
+        .map(Json)
+        .ok_or_else(ApiError::not_found)
 }
 
 /// Minimal subset of GitHub's `pull_request` webhook payload — only the
@@ -511,6 +585,9 @@ impl ApiError {
     }
     fn unauthorized() -> Self {
         Self { status: StatusCode::UNAUTHORIZED, body: "unauthorized".into() }
+    }
+    fn not_found() -> Self {
+        Self { status: StatusCode::NOT_FOUND, body: "not found".into() }
     }
 }
 
@@ -914,5 +991,175 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("empty"), "unexpected error: {err}");
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    // ---- M6 P1: answer-back read endpoints --------------------------------
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use iroh::{endpoint::presets, Endpoint, RelayMode};
+    use tower::util::ServiceExt;
+
+    /// Spin up a local-only Inbox + a router with no token configured.
+    /// `presets::Minimal` + `RelayMode::Disabled` skips n0 relay/discovery
+    /// so the test is fully offline and deterministic.
+    async fn local_router_state() -> (Router, Arc<Inbox>) {
+        let ep = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .expect("bind endpoint");
+        let inbox = Arc::new(Inbox::create(ep, "test").await.expect("create inbox"));
+        let state = ServerState {
+            inbox: inbox.clone(),
+            default_source: Arc::new("test".into()),
+            token: None,
+        };
+        (build_router(state), inbox)
+    }
+
+    async fn get(router: &Router, path: &str) -> (StatusCode, serde_json::Value) {
+        let resp = router
+            .clone()
+            .oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap())
+            .await
+            .expect("router oneshot");
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let json = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+            })
+        };
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn get_card_returns_full_snapshot() {
+        let (router, inbox) = local_router_state().await;
+        let card = MessageCard {
+            id: "card-snap".into(),
+            a2ui: serde_json::json!({ "kind": "Text" }),
+            summary: "snap".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&card).await.expect("push");
+        inbox.record_action("card-snap", "approve", Some(serde_json::json!({"by":"alice"})))
+            .await
+            .expect("record_action");
+        inbox.set_data("card-snap", "/note", &serde_json::json!("ok"))
+            .await
+            .expect("set_data");
+
+        let (status, body) = get(&router, "/cards/card-snap").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["card"]["id"], "card-snap");
+        assert_eq!(body["state"]["action_name"], "approve");
+        assert_eq!(body["state"]["action_context"]["by"], "alice");
+        assert_eq!(body["data"]["/note"], "ok");
+    }
+
+    #[tokio::test]
+    async fn get_card_404_when_unknown() {
+        let (router, _) = local_router_state().await;
+        let (status, _) = get(&router, "/cards/never-pushed").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_state_returns_just_state_or_404() {
+        let (router, inbox) = local_router_state().await;
+        let card = MessageCard {
+            id: "card-s".into(),
+            a2ui: serde_json::json!({}),
+            summary: "s".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        inbox.push(&card).await.expect("push");
+        // 404 before any state write — card exists but state/<id> doesn't.
+        let (status, _) = get(&router, "/cards/card-s/state").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // After dismiss, state lands and the route returns it.
+        inbox.dismiss("card-s").await.expect("dismiss");
+        let (status, body) = get(&router, "/cards/card-s/state").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "dismissed");
+        assert_eq!(body["action_name"], "dismiss");
+    }
+
+    #[tokio::test]
+    async fn get_data_returns_value_at_bind_path() {
+        let (router, inbox) = local_router_state().await;
+        inbox.push(&MessageCard {
+            id: "card-d".into(),
+            a2ui: serde_json::json!({}),
+            summary: "d".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        }).await.unwrap();
+        inbox.set_data("card-d", "/score", &serde_json::json!(7)).await.unwrap();
+        inbox.set_data("card-d", "/contact/email", &serde_json::json!("a@b.c")).await.unwrap();
+
+        let (status, body) = get(&router, "/cards/card-d/data/score").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!(7));
+
+        // Nested bind path with multiple segments (axum {*path} wildcard).
+        let (status, body) = get(&router, "/cards/card-d/data/contact/email").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!("a@b.c"));
+
+        // Missing bind path → 404.
+        let (status, _) = get(&router, "/cards/card-d/data/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn read_endpoints_require_token_when_configured() {
+        let ep = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let inbox = Arc::new(Inbox::create(ep, "test").await.unwrap());
+        let state = ServerState {
+            inbox: inbox.clone(),
+            default_source: Arc::new("test".into()),
+            token: Some(Arc::new("s3cr3t".into())),
+        };
+        let router = build_router(state);
+
+        // No Authorization header → 401.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/cards/any")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // With the right token → 404 (no card pushed yet) but routes through auth.
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/cards/any")
+                    .header(AUTHORIZATION, "Bearer s3cr3t")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
