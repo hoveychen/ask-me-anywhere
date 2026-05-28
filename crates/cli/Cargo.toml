@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 ama-core = { path = "../core" }
 anyhow = "1.0.102"
+axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 futures-lite = "2.6"
 iroh = "0.98.2"
@@ -20,3 +21,6 @@ tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

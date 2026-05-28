@@ -22,6 +22,13 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, RelayChoice, Status};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get as http_get, post},
+    Json, Router,
+};
 use clap::{Parser, Subcommand};
 use futures_lite::StreamExt;
 use qrcode::{render::unicode, QrCode};
@@ -78,6 +85,24 @@ enum Command {
         /// exits sooner once it sees a `SyncFinished` event.
         #[arg(long, default_value_t = 5)]
         wait_secs: u64,
+    },
+    /// Long-running webhook bridge: join an inbox once, listen on HTTP, and
+    /// forward `POST /push` bodies (same JSON shape as `send --card-file`) as
+    /// cards into the inbox. `GET /healthz` is a liveness probe.
+    Serve {
+        /// Ticket of the inbox to push into. The server joins once at startup
+        /// and reuses the same embedded node for the process lifetime.
+        #[arg(long)]
+        ticket: String,
+        /// TCP address to bind, e.g. `127.0.0.1:8080` or `0.0.0.0:8080`.
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        bind: String,
+        /// Default `source` stamped on incoming cards that omit it.
+        #[arg(long, default_value = "webhook")]
+        name: String,
+        /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
+        #[arg(long)]
+        relay: Option<String>,
     },
 }
 
@@ -146,6 +171,9 @@ async fn main() -> Result<()> {
         Command::Send { ticket, card_file, name, relay, wait_secs } => {
             return run_send(ticket, card_file, name, relay, wait_secs).await;
         }
+        Command::Serve { ticket, bind, name, relay } => {
+            return run_serve(ticket, bind, name, relay).await;
+        }
     };
 
     // Watch the document for remote changes in the background.
@@ -201,6 +229,98 @@ async fn read_card_input(path: &str) -> Result<Vec<u8>> {
         tokio::fs::read(&path)
             .await
             .with_context(|| format!("read card file {}", path.display()))
+    }
+}
+
+/// Webhook bridge: join the inbox once, then run an axum server forever.
+/// `Ctrl+C` triggers a graceful shutdown that closes the iroh endpoint
+/// cleanly (preventing the "Endpoint dropped without calling close" warning).
+async fn run_serve(
+    ticket: String,
+    bind: String,
+    name: String,
+    relay: Option<String>,
+) -> Result<()> {
+    let ticket = ticket.parse().context("parse ticket")?;
+    let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
+    let inbox = Arc::new(Inbox::join(endpoint, ticket, name.clone()).await?);
+    eprintln!("joined inbox {}", inbox.doc_id());
+
+    let state = ServerState { inbox: inbox.clone(), default_source: Arc::new(name) };
+    let app = Router::new()
+        .route("/healthz", http_get(healthz))
+        .route("/push", post(push_handler))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(&bind)
+        .await
+        .with_context(|| format!("bind {bind}"))?;
+    eprintln!("listening on http://{}", listener.local_addr()?);
+
+    let server = axum::serve(listener, app).with_graceful_shutdown(async {
+        let _ = tokio::signal::ctrl_c().await;
+        eprintln!("shutting down…");
+    });
+    server.await.context("axum serve")?;
+
+    // Clean shutdown so the iroh endpoint closes its sockets / relay actor.
+    if let Ok(inbox) = Arc::try_unwrap(inbox) {
+        inbox.shutdown().await?;
+    }
+    Ok(())
+}
+
+/// State shared into every axum handler.
+#[derive(Clone)]
+struct ServerState {
+    inbox: Arc<Inbox>,
+    /// Fallback `source` for cards whose JSON omits it; matches `ama send`'s
+    /// `--name` semantics so the two surfaces behave consistently.
+    default_source: Arc<String>,
+}
+
+/// `GET /healthz` — cheap liveness probe (no inbox call).
+async fn healthz() -> &'static str {
+    "ok"
+}
+
+/// `POST /push` — body is the same JSON shape as `ama send --card-file`. On
+/// success returns `200 { "id": "<uuid>" }`; on a malformed body, `400`.
+async fn push_handler(
+    State(state): State<ServerState>,
+    Json(input): Json<CardInput>,
+) -> Result<Json<PushResponse>, ApiError> {
+    let card = input.into_card(&state.default_source);
+    state
+        .inbox
+        .push(&card)
+        .await
+        .map_err(|e| ApiError::internal(format!("push: {e:#}")))?;
+    eprintln!("/push -> [{}] {}", card.id, card.summary);
+    Ok(Json(PushResponse { id: card.id }))
+}
+
+#[derive(serde::Serialize)]
+struct PushResponse {
+    id: String,
+}
+
+/// Tiny error wrapper: maps anyhow-style errors to HTTP responses without
+/// dragging in a full error crate.
+struct ApiError {
+    status: StatusCode,
+    body: String,
+}
+
+impl ApiError {
+    fn internal(msg: String) -> Self {
+        Self { status: StatusCode::INTERNAL_SERVER_ERROR, body: msg }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, self.body).into_response()
     }
 }
 

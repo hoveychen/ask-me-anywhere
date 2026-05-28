@@ -97,6 +97,7 @@ version = "0.1.0"
 dependencies = [
  "ama-core",
  "anyhow",
+ "axum",
  "clap",
  "futures-lite",
  "iroh",
@@ -104,6 +105,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
