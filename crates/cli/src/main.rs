@@ -126,6 +126,12 @@ async fn main() -> Result<()> {
         Command::Create { name, relay } => {
             let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
             let inbox = Inbox::create(endpoint, name).await?;
+            // The ticket's reachability is carried by the relay URL; minting
+            // it before the relay is assigned produces an unreachable ticket,
+            // and external dials (ama send / ama serve / a paired device just
+            // after scanning) time out at the gossip layer. See
+            // crates/core/tests/sync.rs::wait_relay.
+            wait_relay(&inbox).await?;
             let ticket = inbox.ticket().await?;
             print_ticket(&ticket.to_string());
             Arc::new(inbox)
@@ -229,6 +235,23 @@ async fn wait_for_sync(
             }
         }
     }
+}
+
+/// Wait (bounded) until the inbox's endpoint has registered with a relay,
+/// so the next `Inbox::ticket()` carries a reachable relay URL. Mirrors the
+/// `wait_relay` helper in `crates/core/tests/sync.rs`.
+async fn wait_relay(inbox: &Inbox) -> Result<()> {
+    let ep = inbox.endpoint().clone();
+    // `online().await` proactively probes relay/discovery; without this the
+    // background relay actor still drives the assignment but slower.
+    tokio::spawn(async move { ep.online().await });
+    for _ in 0..600 {
+        if inbox.endpoint().addr().relay_urls().next().is_some() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("inbox never obtained a relay url within 60s — check network / relay config");
 }
 
 /// Pretty-print a ticket as both copyable text and a scannable QR code.
