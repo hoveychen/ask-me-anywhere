@@ -4,6 +4,8 @@
     <!-- Keep the iroh node syncing while backgrounded (M4 P3 foreground service). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <!-- Camera for QR pairing-scan (M4 P4). -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="flutter_app"
         android:name="${applicationName}"
