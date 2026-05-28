@@ -24,7 +24,8 @@ use anyhow::{bail, Context, Result};
 use ama_core::{build_endpoint, now_ms, Inbox, LiveEvent, MessageCard, RelayChoice, Status};
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    middleware::{from_fn_with_state, Next},
     response::IntoResponse,
     routing::{get as http_get, post},
     Json, Router,
@@ -103,6 +104,15 @@ enum Command {
         /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
         #[arg(long)]
         relay: Option<String>,
+        /// Inline bearer token required on POST routes (`/push`, `/github/pr`).
+        /// Mutually exclusive with `--token-file`. When neither is set the
+        /// server runs OPEN (logged at startup).
+        #[arg(long, conflicts_with = "token_file")]
+        token: Option<String>,
+        /// Path to a file whose first line is the bearer token. Trailing
+        /// whitespace is trimmed.
+        #[arg(long)]
+        token_file: Option<String>,
     },
 }
 
@@ -171,8 +181,8 @@ async fn main() -> Result<()> {
         Command::Send { ticket, card_file, name, relay, wait_secs } => {
             return run_send(ticket, card_file, name, relay, wait_secs).await;
         }
-        Command::Serve { ticket, bind, name, relay } => {
-            return run_serve(ticket, bind, name, relay).await;
+        Command::Serve { ticket, bind, name, relay, token, token_file } => {
+            return run_serve(ticket, bind, name, relay, token, token_file).await;
         }
     };
 
@@ -240,17 +250,29 @@ async fn run_serve(
     bind: String,
     name: String,
     relay: Option<String>,
+    token: Option<String>,
+    token_file: Option<String>,
 ) -> Result<()> {
+    let token = resolve_token(token, token_file).await?;
+    if token.is_none() {
+        eprintln!(
+            "WARNING: --token/--token-file not set; the server is OPEN. \
+             Anyone reaching the bind address can push cards into the inbox."
+        );
+    }
+
     let ticket = ticket.parse().context("parse ticket")?;
     let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
     let inbox = Arc::new(Inbox::join(endpoint, ticket, name.clone()).await?);
     eprintln!("joined inbox {}", inbox.doc_id());
 
-    let state = ServerState { inbox: inbox.clone(), default_source: Arc::new(name) };
-    let app = Router::new()
-        .route("/healthz", http_get(healthz))
-        .route("/push", post(push_handler))
-        .with_state(state);
+    let state = ServerState {
+        inbox: inbox.clone(),
+        default_source: Arc::new(name),
+        token: token.map(Arc::new),
+    };
+
+    let app = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
@@ -270,6 +292,47 @@ async fn run_serve(
     Ok(())
 }
 
+/// Resolve the configured token, reading from disk if `--token-file` was used.
+/// Trims trailing whitespace so a `printf foo > token` style file works.
+async fn resolve_token(
+    inline: Option<String>,
+    from_file: Option<String>,
+) -> Result<Option<String>> {
+    match (inline, from_file) {
+        (Some(t), None) => Ok(Some(t)),
+        (None, Some(path)) => {
+            let raw = tokio::fs::read_to_string(&path)
+                .await
+                .with_context(|| format!("read --token-file {path}"))?;
+            let trimmed = raw.trim().to_string();
+            if trimmed.is_empty() {
+                bail!("--token-file {path} is empty");
+            }
+            Ok(Some(trimmed))
+        }
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            // clap's `conflicts_with` should already reject this, but be defensive.
+            bail!("--token and --token-file are mutually exclusive")
+        }
+    }
+}
+
+/// Wire the public (`/healthz`) and auth-required (`/push`, `/github/pr`)
+/// routes. Extracted from `run_serve` so it can be exercised in unit tests
+/// via `tower::ServiceExt::oneshot`.
+fn build_router(state: ServerState) -> Router {
+    let public = Router::new()
+        .route("/healthz", http_get(healthz))
+        .with_state(state.clone());
+    let authed = Router::new()
+        .route("/push", post(push_handler))
+        .route("/github/pr", post(github_pr_handler))
+        .layer(from_fn_with_state(state.clone(), auth_middleware))
+        .with_state(state);
+    public.merge(authed)
+}
+
 /// State shared into every axum handler.
 #[derive(Clone)]
 struct ServerState {
@@ -277,6 +340,33 @@ struct ServerState {
     /// Fallback `source` for cards whose JSON omits it; matches `ama send`'s
     /// `--name` semantics so the two surfaces behave consistently.
     default_source: Arc<String>,
+    /// Bearer token required on auth-protected routes. `None` means the server
+    /// was started without `--token` and the middleware lets everything through.
+    token: Option<Arc<String>>,
+}
+
+/// Bearer-token guard for POST routes. With no configured token the middleware
+/// is effectively a no-op (so the M5 P2 open-server behaviour is preserved
+/// when nobody opted in); with a token, the request must carry
+/// `Authorization: Bearer <token>` (exact match) or it's rejected as 401.
+async fn auth_middleware(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+    next: Next,
+) -> Result<axum::response::Response, ApiError> {
+    let Some(expected) = state.token.as_deref() else {
+        return Ok(next.run(req).await);
+    };
+    let provided = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim);
+    match provided {
+        Some(t) if t == expected.as_str() => Ok(next.run(req).await),
+        _ => Err(ApiError::unauthorized()),
+    }
 }
 
 /// `GET /healthz` — cheap liveness probe (no inbox call).
@@ -305,6 +395,109 @@ struct PushResponse {
     id: String,
 }
 
+/// Minimal subset of GitHub's `pull_request` webhook payload — only the
+/// fields the adapter actually reads. GitHub sends a lot more; serde's
+/// default `deny_unknown_fields = false` lets us ignore the rest.
+#[derive(Debug, Deserialize, PartialEq)]
+struct GithubPrPayload {
+    action: String,
+    pull_request: GithubPr,
+    repository: GithubRepo,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct GithubPr {
+    number: u64,
+    title: String,
+    #[serde(default)]
+    body: Option<String>,
+    html_url: String,
+    user: GithubUser,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct GithubUser {
+    login: String,
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct GithubRepo {
+    full_name: String,
+}
+
+/// `POST /github/pr` — accepts a GitHub `pull_request` webhook payload and
+/// (for `opened` / `reopened` / `ready_for_review` actions) turns it into an
+/// A2UI card with the PR title, body excerpt, and a single "Open PR" link.
+/// Other actions are quietly ignored so GitHub's at-least-once delivery
+/// doesn't spam the inbox with noise events.
+async fn github_pr_handler(
+    State(state): State<ServerState>,
+    Json(payload): Json<GithubPrPayload>,
+) -> Result<Json<GithubPrResponse>, ApiError> {
+    if !matches!(payload.action.as_str(), "opened" | "reopened" | "ready_for_review") {
+        return Ok(Json(GithubPrResponse { id: None, ignored: true }));
+    }
+    let card = github_pr_to_card(&payload, &state.default_source);
+    state
+        .inbox
+        .push(&card)
+        .await
+        .map_err(|e| ApiError::internal(format!("push: {e:#}")))?;
+    eprintln!("/github/pr -> [{}] {}", card.id, card.summary);
+    Ok(Json(GithubPrResponse { id: Some(card.id), ignored: false }))
+}
+
+#[derive(serde::Serialize)]
+struct GithubPrResponse {
+    /// Card id if the payload was actioned, `None` if ignored.
+    id: Option<String>,
+    /// `true` when the action was not in the actioned set (e.g. `closed`).
+    ignored: bool,
+}
+
+/// Pure transform: GitHub PR payload → A2UI card. Pure so it can be
+/// unit-tested without spinning up the network stack.
+fn github_pr_to_card(p: &GithubPrPayload, default_source: &str) -> MessageCard {
+    let summary = format!(
+        "[{}#{}] {} (by @{})",
+        p.repository.full_name, p.pull_request.number, p.pull_request.title, p.pull_request.user.login
+    );
+    let body_excerpt = p
+        .pull_request
+        .body
+        .as_deref()
+        .unwrap_or("(no description)")
+        .chars()
+        .take(280)
+        .collect::<String>();
+    let a2ui = serde_json::json!({
+        "root": {
+            "Card": {
+                "id": "root",
+                "children": [
+                    { "Text": { "id": "title", "text": summary.clone() } },
+                    { "Text": { "id": "body", "text": body_excerpt } },
+                    { "Button": {
+                        "id": "open",
+                        "label": "Open PR",
+                        "action": {
+                            "name": "open_url",
+                            "context": { "url": p.pull_request.html_url.clone() }
+                        }
+                    } }
+                ]
+            }
+        }
+    });
+    MessageCard {
+        id: uuid::Uuid::new_v4().to_string(),
+        a2ui,
+        summary,
+        source: format!("{default_source}/github"),
+        created_at: now_ms(),
+    }
+}
+
 /// Tiny error wrapper: maps anyhow-style errors to HTTP responses without
 /// dragging in a full error crate.
 struct ApiError {
@@ -315,6 +508,9 @@ struct ApiError {
 impl ApiError {
     fn internal(msg: String) -> Self {
         Self { status: StatusCode::INTERNAL_SERVER_ERROR, body: msg }
+    }
+    fn unauthorized() -> Self {
+        Self { status: StatusCode::UNAUTHORIZED, body: "unauthorized".into() }
     }
 }
 
@@ -612,5 +808,111 @@ mod tests {
             err.to_string().contains("summary"),
             "expected error to mention missing field: {err}"
         );
+    }
+
+    // ---- GitHub adapter ---------------------------------------------------
+
+    fn sample_github_payload(action: &str) -> GithubPrPayload {
+        GithubPrPayload {
+            action: action.into(),
+            pull_request: GithubPr {
+                number: 42,
+                title: "Add foo".into(),
+                body: Some("Adds foo because bar.".into()),
+                html_url: "https://github.com/acme/widget/pull/42".into(),
+                user: GithubUser { login: "octocat".into() },
+            },
+            repository: GithubRepo { full_name: "acme/widget".into() },
+        }
+    }
+
+    #[test]
+    fn github_pr_to_card_summary_includes_repo_number_title_user() {
+        let card = github_pr_to_card(&sample_github_payload("opened"), "webhook");
+        assert_eq!(card.summary, "[acme/widget#42] Add foo (by @octocat)");
+        assert_eq!(card.source, "webhook/github");
+    }
+
+    #[test]
+    fn github_pr_to_card_a2ui_carries_open_pr_button() {
+        let card = github_pr_to_card(&sample_github_payload("opened"), "webhook");
+        // The Button child's action.context.url is what the renderer dispatches.
+        let url = card.a2ui["root"]["Card"]["children"][2]["Button"]["action"]["context"]["url"]
+            .as_str()
+            .expect("Button.action.context.url present");
+        assert_eq!(url, "https://github.com/acme/widget/pull/42");
+    }
+
+    #[test]
+    fn github_pr_to_card_falls_back_when_body_missing() {
+        let mut p = sample_github_payload("opened");
+        p.pull_request.body = None;
+        let card = github_pr_to_card(&p, "webhook");
+        let body = card.a2ui["root"]["Card"]["children"][1]["Text"]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(body, "(no description)");
+    }
+
+    #[test]
+    fn github_pr_payload_ignores_unknown_fields() {
+        // GitHub sends a giant payload; serde must not choke on the extras.
+        let raw = r#"{
+          "action": "opened",
+          "number": 99,
+          "extra_top_level_field": "ignore me",
+          "pull_request": {
+            "id": 1234567890,
+            "number": 42,
+            "title": "t",
+            "body": "b",
+            "html_url": "https://x/y/pull/42",
+            "user": { "login": "u", "id": 1 },
+            "merged": false
+          },
+          "repository": { "id": 99, "full_name": "x/y" },
+          "sender": { "login": "z" }
+        }"#;
+        let parsed: GithubPrPayload = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.action, "opened");
+        assert_eq!(parsed.pull_request.number, 42);
+    }
+
+    // ---- Token resolution -------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_token_inline_wins() {
+        let t = resolve_token(Some("abc".into()), None).await.unwrap();
+        assert_eq!(t.as_deref(), Some("abc"));
+    }
+
+    #[tokio::test]
+    async fn resolve_token_from_file_trims_trailing_whitespace() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ama-token-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, "secret-token\n").await.unwrap();
+        let t = resolve_token(None, Some(path.to_string_lossy().into_owned()))
+            .await
+            .unwrap();
+        assert_eq!(t.as_deref(), Some("secret-token"));
+        let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn resolve_token_none_is_open_server() {
+        let t = resolve_token(None, None).await.unwrap();
+        assert!(t.is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_token_empty_file_errors() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("ama-empty-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, "   \n  \n").await.unwrap();
+        let err = resolve_token(None, Some(path.to_string_lossy().into_owned()))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("empty"), "unexpected error: {err}");
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }
