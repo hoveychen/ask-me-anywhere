@@ -851,21 +851,29 @@ async fn wait_for_sync(
     }
 }
 
-/// Wait (bounded) until the inbox's endpoint has registered with a relay,
-/// so the next `Inbox::ticket()` carries a reachable relay URL. Mirrors the
-/// `wait_relay` helper in `crates/core/tests/sync.rs`.
+/// Wait (bounded) until the inbox's endpoint has a relay URL in its address,
+/// so the next `Inbox::ticket()` carries a reachable relay URL.
+///
+/// Polls `endpoint().addr()` — which resolves through `watch_addr()` /
+/// `home_relay()` and returns a freshly-built `EndpointAddr` — until a relay
+/// URL appears. The relay connection is driven by the endpoint's background
+/// actor on its own after bind; we only wait for it.
+///
+/// Do NOT use `Endpoint::online()` here, and do NOT spawn it alongside this
+/// poll: `online()` iterates the `home_relay_status()` watcher value
+/// (`Vec<Option<(RelayUrl, HomeRelayStatus)>>`), which aliases state the relay
+/// actor mutates concurrently — dropping that partially-consumed iterator
+/// double-frees the heap (SIGABRT / exit 134, flaky, release-only; confirmed
+/// via macOS crash report pointing at the `Flatten<…HomeRelayStatus…>` drop).
+/// The `addr()` path never touches `HomeRelayStatus`, so it's race-free.
 async fn wait_relay(inbox: &Inbox) -> Result<()> {
-    let ep = inbox.endpoint().clone();
-    // `online().await` proactively probes relay/discovery; without this the
-    // background relay actor still drives the assignment but slower.
-    tokio::spawn(async move { ep.online().await });
     for _ in 0..600 {
         if inbox.endpoint().addr().relay_urls().next().is_some() {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    bail!("inbox never obtained a relay url within 60s — check network / relay config");
+    bail!("inbox never obtained a relay url within 60s — check network / relay config")
 }
 
 /// Pretty-print a ticket as both copyable text and a scannable QR code.
