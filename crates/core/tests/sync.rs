@@ -57,9 +57,13 @@ async fn relay_endpoint(relay_map: RelayMap) -> Endpoint {
 /// pairing ticket's reachability, so minting a ticket before this is set
 /// produces an unreachable ticket (a failure we hit early on). Bounded so
 /// missing connectivity fails the test instead of hanging.
+///
+/// Polls `endpoint().addr()` (resolved via `watch_addr()` / `home_relay()`,
+/// a freshly-built `EndpointAddr`). Do NOT spawn `Endpoint::online()`
+/// alongside this — `online()` iterates the `home_relay_status()` watcher,
+/// which aliases state the relay actor mutates concurrently, double-freeing
+/// the heap (SIGABRT in release). See crates/cli/src/main.rs::wait_relay.
 async fn wait_relay(inbox: &Inbox) {
-    let ep = inbox.endpoint().clone();
-    tokio::spawn(async move { ep.online().await });
     for _ in 0..600 {
         if inbox.endpoint().addr().relay_urls().next().is_some() {
             return;

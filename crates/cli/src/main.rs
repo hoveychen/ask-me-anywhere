@@ -619,10 +619,26 @@ struct EventsQuery {
     card_id: String,
 }
 
+/// Build a `data` SSE event for a bind_path/value pair.
+fn data_event(bind_path: &str, value: &serde_json::Value) -> Option<Event> {
+    Event::default()
+        .event("data")
+        .json_data(serde_json::json!({ "bind_path": bind_path, "value": value }))
+        .ok()
+}
+
 /// `GET /events?card_id=<id>` — SSE stream of `state` and `data` events for
 /// a single card. Each event has the resolved value as its JSON payload
 /// (the same shape the polling endpoints return), so a client never has to
 /// follow up with a separate read.
+///
+/// On connect the stream first replays a **snapshot**: the card's current
+/// state (if any) and every bound data value, as `state` / `data` events —
+/// then switches to live deltas. The subscription is taken BEFORE the
+/// snapshot read, so an update landing between the two is captured by the
+/// live stream as well; since state/data are LWW, the duplicate emit is
+/// idempotent. This closes the race the old "GET /cards/{id} then attach
+/// SSE" pattern had (an update in the gap was missed entirely).
 ///
 /// SSE event types:
 ///   - `state` → MessageState JSON
@@ -637,15 +653,36 @@ async fn events_handler(
     Query(params): Query<EventsQuery>,
 ) -> Result<Sse<impl futures_lite::Stream<Item = std::result::Result<Event, std::convert::Infallible>>>, ApiError>
 {
+    let card_id = params.card_id;
+
+    // 1. Subscribe FIRST so nothing written after this point is lost, even
+    //    while we read the snapshot below.
     let events = state
         .inbox
         .subscribe()
         .await
         .map_err(|e| ApiError::internal(format!("subscribe: {e:#}")))?;
     let inbox = state.inbox.clone();
-    let card_id = params.card_id;
 
-    let stream = futures_lite::stream::unfold(
+    // 2. Read the current snapshot (state + all data) and turn it into the
+    //    initial batch of SSE events.
+    let mut snapshot: Vec<Event> = Vec::new();
+    if let Ok(Some(s)) = inbox.get_state(&card_id).await {
+        if let Ok(ev) = Event::default().event("state").json_data(&s) {
+            snapshot.push(ev);
+        }
+    }
+    if let Ok(data) = inbox.list_data(&card_id).await {
+        for (bind_path, value) in data {
+            if let Some(ev) = data_event(&bind_path, &value) {
+                snapshot.push(ev);
+            }
+        }
+    }
+    let snapshot_stream = futures_lite::stream::iter(snapshot.into_iter().map(Ok));
+
+    // 3. Live deltas after the snapshot.
+    let live_stream = futures_lite::stream::unfold(
         (events, inbox, card_id),
         |(mut events, inbox, card_id)| async move {
             loop {
@@ -668,13 +705,7 @@ async fn events_handler(
                     },
                     KeyKind::Data { id, bind_path } if id == card_id => {
                         match inbox.get_data(&id, &bind_path).await {
-                            Ok(Some(value)) => Event::default()
-                                .event("data")
-                                .json_data(serde_json::json!({
-                                    "bind_path": bind_path,
-                                    "value": value,
-                                }))
-                                .ok(),
+                            Ok(Some(value)) => data_event(&bind_path, &value),
                             _ => None,
                         }
                     }
@@ -687,6 +718,7 @@ async fn events_handler(
         },
     );
 
+    let stream = snapshot_stream.chain(live_stream);
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
@@ -851,21 +883,29 @@ async fn wait_for_sync(
     }
 }
 
-/// Wait (bounded) until the inbox's endpoint has registered with a relay,
-/// so the next `Inbox::ticket()` carries a reachable relay URL. Mirrors the
-/// `wait_relay` helper in `crates/core/tests/sync.rs`.
+/// Wait (bounded) until the inbox's endpoint has a relay URL in its address,
+/// so the next `Inbox::ticket()` carries a reachable relay URL.
+///
+/// Polls `endpoint().addr()` — which resolves through `watch_addr()` /
+/// `home_relay()` and returns a freshly-built `EndpointAddr` — until a relay
+/// URL appears. The relay connection is driven by the endpoint's background
+/// actor on its own after bind; we only wait for it.
+///
+/// Do NOT use `Endpoint::online()` here, and do NOT spawn it alongside this
+/// poll: `online()` iterates the `home_relay_status()` watcher value
+/// (`Vec<Option<(RelayUrl, HomeRelayStatus)>>`), which aliases state the relay
+/// actor mutates concurrently — dropping that partially-consumed iterator
+/// double-frees the heap (SIGABRT / exit 134, flaky, release-only; confirmed
+/// via macOS crash report pointing at the `Flatten<…HomeRelayStatus…>` drop).
+/// The `addr()` path never touches `HomeRelayStatus`, so it's race-free.
 async fn wait_relay(inbox: &Inbox) -> Result<()> {
-    let ep = inbox.endpoint().clone();
-    // `online().await` proactively probes relay/discovery; without this the
-    // background relay actor still drives the assignment but slower.
-    tokio::spawn(async move { ep.online().await });
     for _ in 0..600 {
         if inbox.endpoint().addr().relay_urls().next().is_some() {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    bail!("inbox never obtained a relay url within 60s — check network / relay config");
+    bail!("inbox never obtained a relay url within 60s — check network / relay config")
 }
 
 /// Pretty-print a ticket as both copyable text and a scannable QR code.
@@ -1413,6 +1453,62 @@ mod tests {
         }
         // Dropping `body` here drops the response future, which cancels the
         // SSE handler's subscription — verifies the cleanup path implicitly.
+    }
+
+    #[tokio::test]
+    async fn events_replays_snapshot_on_connect() {
+        use http_body_util::BodyExt;
+
+        // A card that ALREADY has state + data before anyone attaches SSE.
+        let (router, inbox) = local_router_state().await;
+        inbox.push(&MessageCard {
+            id: "card-snap-sse".into(),
+            a2ui: serde_json::json!({}),
+            summary: "snap".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        }).await.unwrap();
+        inbox.record_action("card-snap-sse", "approve", Some(serde_json::json!({"by": "bob"})))
+            .await
+            .unwrap();
+        inbox.set_data("card-snap-sse", "/note", &serde_json::json!("prefilled"))
+            .await
+            .unwrap();
+
+        // Attach SSE AFTER the writes. With the snapshot-prelude the first
+        // events must carry the already-present state + data (no live write
+        // needed, no separate GET).
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/events?card_id=card-snap-sse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let mut body = resp.into_body();
+        let mut buf = String::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let frame = tokio::time::timeout_at(deadline, body.frame())
+                .await
+                .expect("snapshot SSE stalled")
+                .expect("body ended early")
+                .expect("frame error");
+            if let Ok(data) = frame.into_data() {
+                buf.push_str(&String::from_utf8_lossy(&data));
+            }
+            let have_state = buf.contains("event: state") && buf.contains("\"action_name\":\"approve\"");
+            let have_data = buf.contains("event: data") && buf.contains("\"bind_path\":\"/note\"") && buf.contains("prefilled");
+            if have_state && have_data {
+                break;
+            }
+        }
     }
 
     #[tokio::test]

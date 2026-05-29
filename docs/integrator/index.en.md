@@ -202,7 +202,7 @@ data: {"bind_path":"/note","value":"looks good"}
 
 `card_id` is a **required** query — the handler refuses to broadcast every state/data write on the inbox by default (leaks unrelated cards). When the client disconnects, the server-side subscription is dropped automatically.
 
-There's no replay-from-timestamp yet; the practical pattern is `GET /cards/{id}` once for the current snapshot, then attach SSE for live updates. The microsecond race between snapshot and attach doesn't matter for human-driven approvals.
+On connect the stream **replays a snapshot** — the card's current state (if any) and every bound data value, as the first `state` / `data` events — before switching to live deltas. The subscription is taken *before* the snapshot read, so a write landing in between is also delivered live (state/data are LWW, so the duplicate is idempotent). This means you do **not** need the old "GET `/cards/{id}` then attach SSE" pattern with its race window — just attach SSE and you get the current values plus everything after. (Replay from an arbitrary timestamp — `?since=<ts>` — is not implemented.)
 
 ### 3.3 D: Blocking /ask (single step)
 
