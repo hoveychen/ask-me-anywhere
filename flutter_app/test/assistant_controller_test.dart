@@ -10,6 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_app/src/notify/card_notifier.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/state/assistant_controller.dart';
+import 'package:flutter_app/src/state/badge_sink.dart';
 
 CardView _card(String id, String summary, CardStatus status) => CardView(
       id: id,
@@ -75,11 +76,23 @@ class FakeNotifier implements CardNotifierApi {
   Future<void> notifyCard(CardView card) async => notified.add(card.id);
 }
 
-AssistantController _controllerFor(FakeInbox inbox, FakeNotifier notifier) =>
+class FakeBadge implements BadgeSink {
+  final List<int> counts = [];
+
+  @override
+  void setBadge(int count) => counts.add(count);
+}
+
+AssistantController _controllerFor(
+  FakeInbox inbox,
+  FakeNotifier notifier, {
+  BadgeSink? badge,
+}) =>
     AssistantController(
       createInbox: () async => inbox,
       joinInbox: (_) async => inbox,
       notifier: notifier,
+      badge: badge,
     );
 
 // Let the async watch() → _onDocEvent → _refresh chain settle.
@@ -194,5 +207,41 @@ void main() {
     await _settle();
 
     expect(notifier.notified, isEmpty);
+  });
+
+  test('boot pushes the initial unread count to the badge sink', () async {
+    final inbox = FakeInbox([
+      _card('a', 'A', CardStatus.unread),
+      _card('b', 'B', CardStatus.unread),
+      _card('c', 'C', CardStatus.actioned),
+    ]);
+    final badge = FakeBadge();
+    final c = _controllerFor(inbox, FakeNotifier(), badge: badge);
+
+    await c.boot();
+
+    expect(badge.counts.last, 2);
+    expect(c.unreadCountListenable.value, 2);
+  });
+
+  test('the badge updates when an action clears an unread card', () async {
+    final inbox = FakeInbox([
+      _card('a', 'A', CardStatus.unread),
+      _card('b', 'B', CardStatus.unread),
+    ]);
+    final badge = FakeBadge();
+    final c = _controllerFor(inbox, FakeNotifier(), badge: badge);
+    await c.boot();
+    expect(badge.counts.last, 2);
+
+    // Simulate the CRDT now reporting 'a' as actioned, then act on it.
+    inbox.cards = [
+      _card('a', 'A', CardStatus.actioned),
+      _card('b', 'B', CardStatus.unread),
+    ];
+    await c.recordAction('a', 'approve', const {});
+
+    expect(badge.counts.last, 1);
+    expect(c.unreadCountListenable.value, 1);
   });
 }

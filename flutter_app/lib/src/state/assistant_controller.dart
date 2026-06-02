@@ -16,6 +16,7 @@ import 'package:flutter_app/src/a2ui_sample.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/notify/card_notifier.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
+import 'package:flutter_app/src/state/badge_sink.dart';
 
 /// The slice of `InboxHandle` the controller depends on. A real implementation
 /// ([InboxHandleApi]) delegates to the FRB handle; tests supply a fake.
@@ -91,16 +92,31 @@ class AssistantController extends ChangeNotifier {
     InboxFactory? createInbox,
     JoinFactory? joinInbox,
     CardNotifierApi? notifier,
+    BadgeSink? badge,
   })  : _createInbox = createInbox ?? _defaultCreate,
         _joinInbox = joinInbox ?? _defaultJoin,
-        _notifier = notifier ?? LocalCardNotifier();
+        _notifier = notifier ?? LocalCardNotifier(),
+        _badge = badge ?? const NoopBadgeSink();
 
   /// The process-wide instance the app's UIs share.
   static final AssistantController instance = AssistantController();
 
+  /// Swap the badge surface after construction — used by `boot()`'s platform
+  /// wiring (P5) since [instance] is built before we know the platform deps.
+  set badge(BadgeSink sink) {
+    _badge = sink;
+    _badge.setBadge(unreadCount);
+  }
+
   final InboxFactory _createInbox;
   final JoinFactory _joinInbox;
   final CardNotifierApi _notifier;
+  BadgeSink _badge;
+
+  /// Unread-card count as a listenable, for badge widgets that want to rebuild
+  /// on it alone rather than on the whole controller.
+  final ValueNotifier<int> _unreadCount = ValueNotifier<int>(0);
+  ValueListenable<int> get unreadCountListenable => _unreadCount;
 
   InboxApi? _inbox;
   List<CardView> _cards = const [];
@@ -132,7 +148,16 @@ class AssistantController extends ChangeNotifier {
   @override
   void dispose() {
     _watchSub?.cancel();
+    _unreadCount.dispose();
     super.dispose();
+  }
+
+  /// Recompute the unread count and push it to the listenable + badge surface.
+  /// Called after every list change so the red dot stays in sync.
+  void _publishUnread() {
+    final int count = unreadCount;
+    _unreadCount.value = count; // ValueNotifier no-ops if unchanged
+    _badge.setBadge(count);
   }
 
   /// Boot the inbox node and start watching. Idempotent: safe to call from more
@@ -173,6 +198,7 @@ class AssistantController extends ChangeNotifier {
     final inbox = _inbox;
     if (inbox == null) return;
     _cards = await inbox.listMessages();
+    _publishUnread();
     notifyListeners();
   }
 
