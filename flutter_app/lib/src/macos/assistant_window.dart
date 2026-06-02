@@ -22,24 +22,30 @@ class AssistantWindowManager {
   static Future<void> ensureInitialized() => windowManager.ensureInitialized();
 
   /// Shrink to the corner, drop the title bar, pin on top.
+  ///
+  /// Order matters: resize+reposition BEFORE flipping the title bar. Changing
+  /// `titleBarStyle` mutates the macOS window style mask and triggers an async
+  /// relayout that clobbers a prior `setSize`; doing it last keeps our size.
   Future<void> enterFloating() async {
+    await windowManager.setResizable(true);
+    await windowManager.setMinimumSize(floatingSize);
+    await windowManager.setSize(floatingSize);
+    await windowManager.setAlignment(Alignment.bottomRight);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setTitleBarStyle(
       TitleBarStyle.hidden,
       windowButtonVisibility: false,
     );
-    await windowManager.setMinimumSize(floatingSize);
-    await windowManager.setSize(floatingSize);
-    await windowManager.setAlignment(Alignment.bottomRight);
   }
 
   /// Restore a normal titled, centred window for the full inbox.
   Future<void> enterList() async {
-    await windowManager.setAlwaysOnTop(false);
+    // Restore the title bar first, then resize/centre (same ordering reason).
     await windowManager.setTitleBarStyle(
       TitleBarStyle.normal,
       windowButtonVisibility: true,
     );
+    await windowManager.setAlwaysOnTop(false);
     await windowManager.setMinimumSize(const Size(480, 480));
     await windowManager.setSize(listSize);
     await windowManager.center();
