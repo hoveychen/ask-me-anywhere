@@ -11,13 +11,14 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:flutter_app/src/android/overlay_host.dart';
+import 'package:flutter_app/src/macos/assistant_views.dart';
 import 'package:flutter_app/src/macos/assistant_window.dart';
 import 'package:flutter_app/src/macos/dock_badge.dart';
-import 'package:flutter_app/src/macos/floating_assistant_view.dart';
 import 'package:flutter_app/src/notify/foreground_service.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/state/assistant_controller.dart';
+import 'package:flutter_app/src/state/assistant_surface.dart';
 import 'package:flutter_app/src/ui/card_detail_screen.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
 import 'package:flutter_app/src/ui/join_screen.dart';
@@ -49,10 +50,11 @@ class AmaApp extends StatelessWidget {
   }
 }
 
-/// Chooses between the full-screen inbox and the platform's resident form. On
-/// macOS it owns the window-mode switch (list ⇄ floating): a new card pops the
-/// floating panel, and closing the window drops to floating instead of quitting.
-/// On every other platform it's just the inbox list.
+/// The resident assistant shell. On macOS it owns the window surface state
+/// machine: a tiny always-on-top icon that expands — on tap or click-away
+/// collapse — into the inbox list, a centred card, or a picker, per
+/// [AssistantSurface]. Closing the window collapses to the icon (never quits).
+/// On every other platform it's just the inbox list (Android adds the overlay).
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
 
@@ -63,18 +65,28 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell>
     with WindowListener, WidgetsBindingObserver {
   final AssistantWindowManager _window = AssistantWindowManager();
-  AssistantMode _mode = AssistantMode.list;
+  AssistantSurfaceState _surface = AssistantSurfaceState.icon;
   OverlayHost? _overlayHost;
+  // Reshaping + focusing the window emits transient blur events; ignore
+  // click-away collapse while a transition is still settling.
+  bool _settling = false;
+
+  List<String> get _pendingIds =>
+      AssistantController.instance.cards
+          .where((c) => c.status == CardStatus.unread)
+          .map((c) => c.id)
+          .toList();
 
   @override
   void initState() {
     super.initState();
     if (_isMacOS) {
       windowManager.addListener(this);
-      // Closing the window must not quit — drop to the floating panel instead.
+      // Closing the window must not quit — collapse to the resident icon.
       windowManager.setPreventClose(true);
       AssistantController.instance.badge = DockBadge();
-      AssistantController.instance.onNewCard = (_) => _enterFloating();
+      // Start resident as the icon once the first frame is up.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _go(AssistantSurfaceState.icon));
     }
     if (_isAndroid) {
       WidgetsBinding.instance.addObserver(this);
@@ -86,7 +98,6 @@ class _RootShellState extends State<RootShell>
   void dispose() {
     if (_isMacOS) {
       windowManager.removeListener(this);
-      AssistantController.instance.onNewCard = null;
     }
     if (_isAndroid) {
       WidgetsBinding.instance.removeObserver(this);
@@ -116,29 +127,52 @@ class _RootShellState extends State<RootShell>
 
   @override
   void onWindowClose() {
-    // preventClose swallowed the quit; become the resident floating assistant.
-    if (_isMacOS) _enterFloating();
+    // preventClose swallowed the quit; collapse to the resident icon.
+    if (_isMacOS) _go(AssistantSurfaceState.icon);
   }
 
-  Future<void> _enterFloating() async {
-    if (!mounted) return;
-    setState(() => _mode = AssistantMode.floating);
-    await _window.enterFloating();
-    await _window.showFloating();
+  @override
+  void onWindowBlur() {
+    // Click-away: any expanded surface collapses back to the icon — but not the
+    // transient blur emitted mid-transition (that would collapse instantly).
+    if (_isMacOS && !_settling && _surface.isExpanded) {
+      _go(AssistantSurfaceState.icon);
+    }
   }
 
-  Future<void> _enterList() async {
+  /// Switch to [state]: reshape the window, then render its surface.
+  Future<void> _go(AssistantSurfaceState state) async {
     if (!mounted) return;
-    setState(() => _mode = AssistantMode.list);
-    await _window.enterList();
+    _settling = true;
+    setState(() => _surface = state);
+    await _window.apply(state);
+    // Let focus settle before re-arming click-away collapse.
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    _settling = false;
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isMacOS && _mode == AssistantMode.floating) {
-      return FloatingAssistantView(onOpenInbox: _enterList);
+    if (!_isMacOS) return const InboxView();
+    switch (_surface.kind) {
+      case AssistantSurfaceKind.icon:
+        return AssistantIconView(
+          onTap: () => _go(AssistantSurface.onTapIcon(_pendingIds)),
+        );
+      case AssistantSurfaceKind.picker:
+        return AssistantPickerView(
+          onPick: (id) => _go(AssistantSurface.onPick(id)),
+          onOpenInbox: () => _go(AssistantSurface.onOpenInbox),
+        );
+      case AssistantSurfaceKind.card:
+        return AssistantCardView(
+          cardId: _surface.cardId!,
+          onResolved: () => _go(AssistantSurface.onResolveCard(_pendingIds)),
+          onOpenInbox: () => _go(AssistantSurface.onOpenInbox),
+        );
+      case AssistantSurfaceKind.list:
+        return const InboxView();
     }
-    return const InboxView();
   }
 }
 

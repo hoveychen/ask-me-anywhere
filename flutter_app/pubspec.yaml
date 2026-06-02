@@ -45,8 +45,10 @@ dependencies:
   qr_flutter: ^4.1.0
   flutter_local_notifications: ^21.0.0
   mobile_scanner: ^7.2.0
-  # macOS Dock-resident floating-assistant window (frameless / always-on-top).
+  # macOS floating-assistant windows (frameless / always-on-top) + screen size
+  # for the centred large-card layout.
   window_manager: ^0.4.3
+  screen_retriever: ^0.2.0
   # Android chat-head bubble (SYSTEM_ALERT_WINDOW overlay) + its permission gate.
   flutter_overlay_window: ^0.4.5
   permission_handler: ^11.3.1
