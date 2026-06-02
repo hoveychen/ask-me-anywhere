@@ -145,9 +145,17 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
+      // Build the panels through a Builder so their Theme.of() resolves the
+      // MaterialApp's (dark) theme. Reading Theme.of(this.context) — the State's
+      // own context, which sits ABOVE this MaterialApp — would hand back the
+      // default LIGHT theme, leaving panel surfaces white under a dark AppBar.
       home: Scaffold(
         backgroundColor: Colors.transparent,
-        body: _surface.kind == AssistantSurfaceKind.icon ? _bubble() : _expanded(),
+        body: Builder(
+          builder: (context) => _surface.kind == AssistantSurfaceKind.icon
+              ? _bubble()
+              : _expanded(context),
+        ),
       ),
     );
   }
@@ -196,7 +204,7 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
 
   // --- expanded: scrim + panel ---
 
-  Widget _expanded() {
+  Widget _expanded(BuildContext context) {
     return Stack(
       children: [
         // Tap-away scrim collapses to the bubble.
@@ -206,26 +214,26 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
             child: Container(color: Colors.black54),
           ),
         ),
-        _panel(),
+        _panel(context),
       ],
     );
   }
 
-  Widget _panel() {
+  Widget _panel(BuildContext context) {
     switch (_surface.kind) {
       case AssistantSurfaceKind.card:
-        return _cardPanel();
+        return _cardPanel(context);
       case AssistantSurfaceKind.picker:
-        return _centeredList('Pick one to handle');
+        return _centeredList(context, 'Pick one to handle');
       case AssistantSurfaceKind.list:
-        return _drawerList();
+        return _drawerList(context);
       case AssistantSurfaceKind.icon:
         return const SizedBox.shrink();
     }
   }
 
   /// The inbox as a right-edge drawer (not the full-attention surface).
-  Widget _drawerList() {
+  Widget _drawerList(BuildContext context) {
     return Align(
       alignment: Alignment.centerRight,
       child: FractionallySizedBox(
@@ -233,14 +241,14 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
         heightFactor: 1,
         child: Material(
           color: Theme.of(context).colorScheme.surface,
-          child: SafeArea(child: _cardListBody('Inbox')),
+          child: SafeArea(child: _cardListBody(context, 'Inbox')),
         ),
       ),
     );
   }
 
   /// The picker — a centred chooser when several cards are pending.
-  Widget _centeredList(String title) {
+  Widget _centeredList(BuildContext context, String title) {
     return Center(
       child: FractionallySizedBox(
         widthFactor: 0.86,
@@ -249,13 +257,13 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
           color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(16),
           clipBehavior: Clip.antiAlias,
-          child: _cardListBody(title),
+          child: _cardListBody(context, title),
         ),
       ),
     );
   }
 
-  Widget _cardListBody(String title) {
+  Widget _cardListBody(BuildContext context, String title) {
     final pending = _cards.where((c) => c.status == 'unread').toList();
     return Column(
       children: [
@@ -291,7 +299,7 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
   }
 
   /// One card, centred and large — the full-attention surface.
-  Widget _cardPanel() {
+  Widget _cardPanel(BuildContext context) {
     final OverlayCard? card = _openCard;
     if (card == null) {
       return const SizedBox.shrink();
