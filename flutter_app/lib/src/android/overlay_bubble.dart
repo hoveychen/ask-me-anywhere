@@ -1,12 +1,16 @@
-// The chat-head bubble — runs in flutter_overlay_window's SEPARATE engine /
-// isolate. Constraint 1: there is no InboxHandle here. It only consumes `cards`
-// snapshots pushed from the main isolate and sends back user commands; the main
-// isolate executes them against the CRDT.
+// The Android chat-head — runs in flutter_overlay_window's SEPARATE engine /
+// isolate. Constraint 1: there is no InboxHandle here; it only consumes `cards`
+// snapshots pushed from the main isolate and sends back commands.
 //
-// Collapsed it's a small circle with a red unread badge. Tapping expands a panel
-// of pending cards; tapping a card renders its A2UI inline (reusing
-// CardDetailView — this is spike 2: genui must work in the overlay engine) and
-// the user's action / dismiss / edits are shared back to the main isolate.
+// Same surface model as macOS (shared [AssistantSurface]):
+//   - bubble (icon): a small circle with the pending-count badge.
+//   - tap → 0 pending: the inbox list as a right-edge drawer (not full-attention).
+//          → 1 pending: that card, centred and large (full attention).
+//          → ≥2 pending: a picker to choose which card.
+//   - tap the scrim outside the panel → collapse back to the bubble.
+//
+// Expanded surfaces resize the overlay to cover the screen (so the scrim catches
+// outside taps); the bubble shrinks it back.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -15,6 +19,7 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:flutter_app/src/android/overlay_bridge.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
+import 'package:flutter_app/src/state/assistant_surface.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
 
 /// Entry point launched by flutter_overlay_window in the overlay isolate.
@@ -23,10 +28,7 @@ void overlayMain() {
   runApp(const OverlayBubbleApp());
 }
 
-// Collapsed / expanded overlay sizes (px). The host resizes the window to match.
-const int _collapsedPx = 64;
-const int _expandedW = 340;
-const int _expandedH = 480;
+const int _bubblePx = 72;
 
 class OverlayBubbleApp extends StatefulWidget {
   const OverlayBubbleApp({super.key});
@@ -37,12 +39,8 @@ class OverlayBubbleApp extends StatefulWidget {
 
 class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
   StreamSubscription<dynamic>? _sub;
-  int _unread = 0;
-  List<OverlayCard> _cards = const [];
-  bool _expanded = false;
-  String? _openCardId;
-
-  // Feeds peer-synced data-model values into the open card's CardDetailView.
+  OverlaySnapshot _snap = const OverlaySnapshot(unreadCount: 0, cards: []);
+  AssistantSurfaceState _surface = AssistantSurfaceState.icon;
   final StreamController<CardDataUpdate> _remote =
       StreamController<CardDataUpdate>.broadcast();
 
@@ -62,12 +60,9 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
   void _onMessage(dynamic message) {
     final OverlaySnapshot? snap = parseSnapshot(message);
     if (snap == null) return;
-    setState(() {
-      _unread = snap.unreadCount;
-      _cards = snap.cards;
-    });
-    // Push the open card's latest bound values into its surface.
-    final OverlayCard? open = _open;
+    setState(() => _snap = snap);
+    // Feed the open card's latest bound values into its surface.
+    final open = _openCard;
     if (open != null) {
       open.dataValues.forEach((path, value) {
         _remote.add(CardDataUpdate(path: path, value: value));
@@ -75,29 +70,35 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
     }
   }
 
-  OverlayCard? get _open {
-    final id = _openCardId;
-    if (id == null) return null;
+  List<OverlayCard> get _cards => _snap.cards;
+  List<String> get _pendingIds =>
+      _cards.where((c) => c.status == 'unread').map((c) => c.id).toList();
+
+  OverlayCard? get _openCard {
+    if (_surface.kind != AssistantSurfaceKind.card) return null;
     for (final c in _cards) {
-      if (c.id == id) return c;
+      if (c.id == _surface.cardId) return c;
     }
     return null;
   }
 
-  Future<void> _collapse() async {
-    setState(() {
-      _expanded = false;
-      _openCardId = null;
-    });
-    await FlutterOverlayWindow.resizeOverlay(_collapsedPx, _collapsedPx, true);
+  void _send(Map<String, Object?> command) =>
+      FlutterOverlayWindow.shareData(command);
+
+  Future<void> _go(AssistantSurfaceState state) async {
+    setState(() => _surface = state);
+    if (state.isExpanded) {
+      await FlutterOverlayWindow.resizeOverlay(
+          WindowSize.matchParent, WindowSize.fullCover, false);
+    } else {
+      await FlutterOverlayWindow.resizeOverlay(_bubblePx, _bubblePx, true);
+    }
   }
 
-  Future<void> _expand() async {
-    setState(() => _expanded = true);
-    await FlutterOverlayWindow.resizeOverlay(_expandedW, _expandedH, false);
+  void _resolve(String cardId) {
+    final remaining = _pendingIds.where((id) => id != cardId).toList();
+    _go(AssistantSurface.onResolveCard(remaining));
   }
-
-  void _send(Map<String, Object?> command) => FlutterOverlayWindow.shareData(command);
 
   @override
   Widget build(BuildContext context) {
@@ -106,15 +107,17 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
       home: Scaffold(
         backgroundColor: Colors.transparent,
-        body: _expanded ? _panel() : _bubble(),
+        body: _surface.kind == AssistantSurfaceKind.icon ? _bubble() : _expanded(),
       ),
     );
   }
 
+  // --- bubble ---
+
   Widget _bubble() {
     return Center(
       child: GestureDetector(
-        onTap: _expand,
+        onTap: () => _go(AssistantSurface.onTapIcon(_pendingIds)),
         child: Stack(
           clipBehavior: Clip.none,
           children: [
@@ -125,21 +128,21 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
                 color: Color(0xFF3D5AFE),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.chat_bubble, color: Colors.white),
+              child: const Icon(Icons.all_inbox, color: Colors.white),
             ),
-            if (_unread > 0)
+            if (_snap.unreadCount > 0)
               Positioned(
                 right: -2,
                 top: -2,
                 child: Container(
                   padding: const EdgeInsets.all(5),
+                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
                   decoration: const BoxDecoration(
                     color: Colors.red,
                     shape: BoxShape.circle,
                   ),
-                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
                   child: Text(
-                    _unread > 99 ? '99+' : '$_unread',
+                    _snap.unreadCount > 99 ? '99+' : '${_snap.unreadCount}',
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.white, fontSize: 11),
                   ),
@@ -151,118 +154,165 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
     );
   }
 
-  Widget _panel() {
-    final OverlayCard? open = _open;
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              if (open != null)
-                IconButton(
-                  icon: const Icon(Icons.arrow_back),
-                  onPressed: () => setState(() => _openCardId = null),
-                ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  child: Text(
-                    open?.summary ?? 'Assistant',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.open_in_new),
-                tooltip: 'Open full inbox',
-                onPressed: () => _send(openInboxCommand()),
-              ),
-              IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: 'Collapse',
-                onPressed: _collapse,
-              ),
-            ],
+  // --- expanded: scrim + panel ---
+
+  Widget _expanded() {
+    return Stack(
+      children: [
+        // Tap-away scrim collapses to the bubble.
+        Positioned.fill(
+          child: GestureDetector(
+            onTap: () => _go(AssistantSurface.onCollapse),
+            child: Container(color: Colors.black54),
           ),
-          const Divider(height: 1),
-          Expanded(child: open != null ? _cardDetail(open) : _cardList()),
-        ],
+        ),
+        _panel(),
+      ],
+    );
+  }
+
+  Widget _panel() {
+    switch (_surface.kind) {
+      case AssistantSurfaceKind.card:
+        return _cardPanel();
+      case AssistantSurfaceKind.picker:
+        return _centeredList('Pick one to handle');
+      case AssistantSurfaceKind.list:
+        return _drawerList();
+      case AssistantSurfaceKind.icon:
+        return const SizedBox.shrink();
+    }
+  }
+
+  /// The inbox as a right-edge drawer (not the full-attention surface).
+  Widget _drawerList() {
+    return Align(
+      alignment: Alignment.centerRight,
+      child: FractionallySizedBox(
+        widthFactor: 0.82,
+        heightFactor: 1,
+        child: Material(
+          color: Theme.of(context).colorScheme.surface,
+          child: SafeArea(child: _cardListBody('Inbox')),
+        ),
       ),
     );
   }
 
-  Widget _cardList() {
-    final List<OverlayCard> pending =
-        _cards.where((c) => c.status == 'unread').toList();
-    if (pending.isEmpty) {
-      return const Center(child: Text('All caught up.'));
-    }
-    return ListView.builder(
-      itemCount: pending.length,
-      itemBuilder: (_, i) {
-        final c = pending[i];
-        return ListTile(
-          dense: true,
-          leading: const Icon(Icons.mark_email_unread),
-          title: Text(c.summary, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(c.source),
-          onTap: () => setState(() => _openCardId = c.id),
-        );
-      },
+  /// The picker — a centred chooser when several cards are pending.
+  Widget _centeredList(String title) {
+    return Center(
+      child: FractionallySizedBox(
+        widthFactor: 0.86,
+        heightFactor: 0.7,
+        child: Material(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: _cardListBody(title),
+        ),
+      ),
     );
   }
 
-  Widget _cardDetail(OverlayCard card) {
-    // Reconstruct a CardView for CardDetailView (status only drives display here).
+  Widget _cardListBody(String title) {
+    final pending = _cards.where((c) => c.status == 'unread').toList();
+    return Column(
+      children: [
+        AppBar(
+          title: Text(title),
+          automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () => _go(AssistantSurface.onCollapse),
+            ),
+          ],
+        ),
+        Expanded(
+          child: pending.isEmpty
+              ? const Center(child: Text('All caught up.'))
+              : ListView.builder(
+                  itemCount: pending.length,
+                  itemBuilder: (_, i) {
+                    final c = pending[i];
+                    return ListTile(
+                      leading: const Icon(Icons.mark_email_unread),
+                      title: Text(c.summary,
+                          maxLines: 1, overflow: TextOverflow.ellipsis),
+                      subtitle: Text(c.source),
+                      onTap: () => _go(AssistantSurface.onPick(c.id)),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  /// One card, centred and large — the full-attention surface.
+  Widget _cardPanel() {
+    final OverlayCard? card = _openCard;
+    if (card == null) {
+      return const SizedBox.shrink();
+    }
     final view = CardView(
       id: card.id,
       summary: card.summary,
       source: card.source,
       createdAt: BigInt.from(card.createdAt),
       a2UiJson: card.a2UiJson,
-      status: _statusFrom(card.status),
+      status: CardStatus.unread,
     );
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          CardDetailView(
-            card: view,
-            onAction: (action) {
-              _send(actionCommand(card.id, action.name, action.context));
-              _collapse();
-            },
-            onDataChanged: (path, value) =>
-                _send(setDataCommand(card.id, path, value)),
-            remoteData: _remote.stream,
+    return Center(
+      child: FractionallySizedBox(
+        widthFactor: 0.92,
+        heightFactor: 0.86,
+        child: Material(
+          color: Theme.of(context).colorScheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              AppBar(
+                title: Text(card.summary,
+                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                automaticallyImplyLeading: false,
+                actions: [
+                  IconButton(
+                    icon: const Icon(Icons.open_in_new),
+                    tooltip: 'Open full inbox',
+                    onPressed: () => _send(openInboxCommand()),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Dismiss',
+                    onPressed: () {
+                      _send(dismissCommand(card.id));
+                      _resolve(card.id);
+                    },
+                  ),
+                ],
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: CardDetailView(
+                    card: view,
+                    onAction: (action) {
+                      _send(actionCommand(card.id, action.name, action.context));
+                      _resolve(card.id);
+                    },
+                    onDataChanged: (path, value) =>
+                        _send(setDataCommand(card.id, path, value)),
+                    remoteData: _remote.stream,
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          TextButton.icon(
-            icon: const Icon(Icons.close),
-            label: const Text('Dismiss'),
-            onPressed: () {
-              _send(dismissCommand(card.id));
-              _collapse();
-            },
-          ),
-        ],
+        ),
       ),
     );
-  }
-
-  CardStatus _statusFrom(String s) {
-    switch (s) {
-      case 'dismissed':
-        return CardStatus.dismissed;
-      case 'actioned':
-        return CardStatus.actioned;
-      default:
-        return CardStatus.unread;
-    }
   }
 }
