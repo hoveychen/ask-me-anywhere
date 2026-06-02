@@ -50,6 +50,22 @@ void main() {
       expect(snap.cards.single.dataValues, isEmpty);
     });
 
+    test('snapshot carries the screen size in logical px so the overlay can '
+        'resize to full-screen with concrete dp (resizeOverlay cannot do '
+        'MATCH_PARENT height — plugin tautology bug)', () {
+      final snap = parseSnapshot(
+        snapshotToJson(0, const [], screenWidth: 411.4, screenHeight: 914.3),
+      )!;
+      expect(snap.screenWidth, 411.4);
+      expect(snap.screenHeight, 914.3);
+    });
+
+    test('screen size defaults to zero when absent (older payloads)', () {
+      final snap = parseSnapshot(snapshotToJson(0, const []))!;
+      expect(snap.screenWidth, 0);
+      expect(snap.screenHeight, 0);
+    });
+
     test('parseSnapshot rejects non-cards messages', () {
       expect(parseSnapshot({'type': 'action', 'cardId': 'a'}), isNull);
       expect(parseSnapshot('garbage'), isNull);

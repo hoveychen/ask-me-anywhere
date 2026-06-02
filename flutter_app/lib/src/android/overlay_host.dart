@@ -4,8 +4,10 @@
 // Constraint 1 lives here — the InboxHandle never leaves this isolate; the
 // overlay only ever sees serialized snapshots.
 import 'dart:async';
+import 'dart:ui' show FlutterView, Size;
 
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
 import 'package:flutter_app/src/android/overlay_bridge.dart';
@@ -81,8 +83,17 @@ class OverlayHost {
         }
         cards.add(cardToJson(c, dataValues: values));
       }
+      // The overlay can't measure the full screen from its bubble-sized view,
+      // so the main isolate (whose view spans the whole screen) measures it and
+      // ships logical-pixel dims for the full-screen resize on expand.
+      final Size screen = _screenLogicalSize();
       await FlutterOverlayWindow.shareData(
-        snapshotToJson(_controller.unreadCount, cards),
+        snapshotToJson(
+          _controller.unreadCount,
+          cards,
+          screenWidth: screen.width,
+          screenHeight: screen.height,
+        ),
       );
     } catch (_) {
       // A failed push must never take down the inbox.
@@ -112,6 +123,18 @@ class OverlayHost {
         await _bringAppToFront();
         break;
     }
+  }
+
+  /// The device screen size in logical pixels (dp), from the main activity's
+  /// view. devicePixelRatio converts the physical frame back to dp.
+  Size _screenLogicalSize() {
+    final FlutterView? view =
+        WidgetsBinding.instance.platformDispatcher.views.isNotEmpty
+            ? WidgetsBinding.instance.platformDispatcher.views.first
+            : null;
+    if (view == null) return Size.zero;
+    final double dpr = view.devicePixelRatio == 0 ? 1 : view.devicePixelRatio;
+    return view.physicalSize / dpr;
   }
 
   Future<void> _bringAppToFront() async {

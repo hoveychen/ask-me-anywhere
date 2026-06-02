@@ -14,6 +14,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
 import 'package:flutter_app/src/android/overlay_bridge.dart';
@@ -29,6 +30,12 @@ import 'package:flutter_app/src/ui/card_detail_view.dart';
 // overlay window blank. Keep the entry in main.dart.
 
 const int _bubblePx = 72;
+
+// The overlay service's own MethodChannel (handled inside the overlay isolate's
+// engine). The public Dart API routes moveOverlay() through the *main* plugin
+// channel, which the overlay isolate can't reach — but the service also accepts
+// `updateOverlayPosition` on this channel, so we drive position resets directly.
+const MethodChannel _overlayServiceCh = MethodChannel('x-slayer/overlay');
 
 class OverlayBubbleApp extends StatefulWidget {
   const OverlayBubbleApp({super.key});
@@ -88,12 +95,37 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
   Future<void> _go(AssistantSurfaceState state) async {
     setState(() => _surface = state);
     if (state.isExpanded) {
-      // Full-screen: MATCH_PARENT for BOTH dims. (fullCover is a showOverlay-only
-      // sentinel; passing it to resizeOverlay sets a bogus literal height.)
+      // Reset the window to the screen origin FIRST. The bubble carries a drag
+      // offset (e.g. parked at the right edge), and resizeOverlay does NOT clear
+      // x/y — so without this the grown window stays pushed off-screen and only
+      // a sliver shows. gravity is RIGHT|CENTER, so x=0 anchors it flush.
+      await _moveTo(0, 0);
+      // Full-screen. Width MATCH_PARENT works, but resizeOverlay's HEIGHT branch
+      // is a plugin bug — `(height != 1999 || height != -1)` is always true, so
+      // it always runs dpToPx(height) and can never set MATCH_PARENT. Passing
+      // matchParent(-1) becomes dpToPx(-1) ≈ -2 = WRAP_CONTENT, collapsing the
+      // content to nothing (the white sliver). So we pass the real screen height
+      // in dp, measured on the main isolate and shipped in the snapshot.
+      final int heightDp = _snap.screenHeight > 0
+          ? _snap.screenHeight.round()
+          : WindowSize.matchParent;
       await FlutterOverlayWindow.resizeOverlay(
-          WindowSize.matchParent, WindowSize.matchParent, false);
+          WindowSize.matchParent, heightDp, false);
     } else {
       await FlutterOverlayWindow.resizeOverlay(_bubblePx, _bubblePx, true);
+      // Return the bubble to a predictable anchor so the next expand starts clean.
+      await _moveTo(0, 0);
+    }
+  }
+
+  /// Reset the overlay window position via the service channel (the public
+  /// moveOverlay() API isn't reachable from the overlay isolate).
+  Future<void> _moveTo(int x, int y) async {
+    try {
+      await _overlayServiceCh
+          .invokeMethod('updateOverlayPosition', {'x': x, 'y': y});
+    } catch (_) {
+      // Best-effort; a failed move must not break the surface transition.
     }
   }
 
