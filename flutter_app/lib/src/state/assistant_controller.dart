@@ -128,6 +128,10 @@ class AssistantController extends ChangeNotifier {
   /// Card ids we've already raised a notification for (notify at most once each).
   final Set<String> _notified = {};
 
+  /// Fired once per freshly-arrived card, alongside the notification. Platform
+  /// shells use it to react (macOS pops the floating window to the front).
+  void Function(CardView card)? onNewCard;
+
   // Cycle a few representative summaries for the debug push.
   static const _samples = [
     'Deploy production?',
@@ -189,6 +193,7 @@ class AssistantController extends ChangeNotifier {
     final CardView? card = newCardFor(event.kind, event.msgId, _cards);
     if (card != null && _notified.add(card.id)) {
       await _notifier.notifyCard(card);
+      onNewCard?.call(card);
     }
   }
 

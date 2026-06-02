@@ -45,6 +45,8 @@ dependencies:
   qr_flutter: ^4.1.0
   flutter_local_notifications: ^21.0.0
   mobile_scanner: ^7.2.0
+  # macOS Dock-resident floating-assistant window (frameless / always-on-top).
+  window_manager: ^0.4.3
 
 dev_dependencies:
   flutter_test:

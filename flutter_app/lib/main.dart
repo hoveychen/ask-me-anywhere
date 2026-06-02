@@ -6,8 +6,15 @@
 // same inbox; this list page is one observer of it. Tapping a card opens its
 // live A2UI surface, where actions (Approve / Dismiss) and bound-field edits
 // flow back into the CRDT. M3c adds QR pairing + native notifications.
-import 'package:flutter/material.dart';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
+
+import 'package:flutter_app/src/macos/assistant_window.dart';
+import 'package:flutter_app/src/macos/dock_badge.dart';
+import 'package:flutter_app/src/macos/floating_assistant_view.dart';
 import 'package:flutter_app/src/notify/foreground_service.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
@@ -17,9 +24,14 @@ import 'package:flutter_app/src/ui/card_detail_view.dart';
 import 'package:flutter_app/src/ui/join_screen.dart';
 import 'package:flutter_app/src/ui/pairing_screen.dart';
 
+bool get _isMacOS => !kIsWeb && Platform.isMacOS;
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await RustLib.init();
+  if (_isMacOS) {
+    await AssistantWindowManager.ensureInitialized();
+  }
   runApp(const AmaApp());
 }
 
@@ -31,8 +43,72 @@ class AmaApp extends StatelessWidget {
     return MaterialApp(
       title: 'ask-me-anywhere',
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
-      home: const InboxView(),
+      home: const RootShell(),
     );
+  }
+}
+
+/// Chooses between the full-screen inbox and the platform's resident form. On
+/// macOS it owns the window-mode switch (list ⇄ floating): a new card pops the
+/// floating panel, and closing the window drops to floating instead of quitting.
+/// On every other platform it's just the inbox list.
+class RootShell extends StatefulWidget {
+  const RootShell({super.key});
+
+  @override
+  State<RootShell> createState() => _RootShellState();
+}
+
+class _RootShellState extends State<RootShell> with WindowListener {
+  final AssistantWindowManager _window = AssistantWindowManager();
+  AssistantMode _mode = AssistantMode.list;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isMacOS) {
+      windowManager.addListener(this);
+      // Closing the window must not quit — drop to the floating panel instead.
+      windowManager.setPreventClose(true);
+      AssistantController.instance.badge = DockBadge();
+      AssistantController.instance.onNewCard = (_) => _enterFloating();
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_isMacOS) {
+      windowManager.removeListener(this);
+      AssistantController.instance.onNewCard = null;
+    }
+    super.dispose();
+  }
+
+  @override
+  void onWindowClose() {
+    // preventClose swallowed the quit; become the resident floating assistant.
+    if (_isMacOS) _enterFloating();
+  }
+
+  Future<void> _enterFloating() async {
+    if (!mounted) return;
+    setState(() => _mode = AssistantMode.floating);
+    await _window.enterFloating();
+    await _window.showFloating();
+  }
+
+  Future<void> _enterList() async {
+    if (!mounted) return;
+    setState(() => _mode = AssistantMode.list);
+    await _window.enterList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isMacOS && _mode == AssistantMode.floating) {
+      return FloatingAssistantView(onOpenInbox: _enterList);
+    }
+    return const InboxView();
   }
 }
 
