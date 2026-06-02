@@ -29,9 +29,11 @@ class OverlayHost {
   Future<void> show() async {
     if (_shown) return;
     if (!await OverlayPermission.ensure()) return;
+    // Start as the small draggable bubble; the overlay isolate resizes itself
+    // to full-screen when a surface expands and back to bubble on collapse.
     await FlutterOverlayWindow.showOverlay(
-      height: 200,
-      width: 200,
+      height: 72,
+      width: 72,
       alignment: OverlayAlignment.centerRight,
       flag: OverlayFlag.defaultFlag,
       enableDrag: true,
@@ -68,13 +70,15 @@ class OverlayHost {
     if (_pushing) return; // coalesce bursts
     _pushing = true;
     try {
-      final List<CardView> pending = _controller.cards
-          .where((c) => c.status == CardStatus.unread)
-          .toList();
+      // Push ALL cards (so the drawer can show the inbox), but only resolve the
+      // bound-value snapshot for the unread ones the overlay can actually open.
       final List<Map<String, Object?>> cards = [];
-      for (final CardView c in pending) {
-        final List<String> paths = dataPaths(parseA2uiMessages(c.a2UiJson));
-        final Map<String, Object?> values = await _controller.cardData(c.id, paths);
+      for (final CardView c in _controller.cards) {
+        Map<String, Object?> values = const {};
+        if (c.status == CardStatus.unread) {
+          final List<String> paths = dataPaths(parseA2uiMessages(c.a2UiJson));
+          values = await _controller.cardData(c.id, paths);
+        }
         cards.add(cardToJson(c, dataValues: values));
       }
       await FlutterOverlayWindow.shareData(
