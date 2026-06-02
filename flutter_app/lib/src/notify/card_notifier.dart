@@ -20,8 +20,16 @@ CardView? newCardFor(String kind, String? msgId, List<CardView> cards) {
   return null;
 }
 
+/// The notification surface the `AssistantController` drives. Lives here (not in
+/// the controller) so [LocalCardNotifier] can implement it without an import
+/// cycle; tests pass a fake to observe new-card dedup without the platform plugin.
+abstract class CardNotifierApi {
+  Future<void> init();
+  Future<void> notifyCard(CardView card);
+}
+
 /// Raises native notifications (macOS + Android) via flutter_local_notifications.
-class LocalCardNotifier {
+class LocalCardNotifier implements CardNotifierApi {
   LocalCardNotifier([FlutterLocalNotificationsPlugin? plugin])
       : _plugin = plugin ?? FlutterLocalNotificationsPlugin();
 
@@ -33,6 +41,7 @@ class LocalCardNotifier {
 
   /// Initialize the plugin and request notification authorization (macOS alert
   /// permission, Android 13+ POST_NOTIFICATIONS). Safe to call once at startup.
+  @override
   Future<void> init() async {
     const settings = InitializationSettings(
       macOS: DarwinInitializationSettings(
@@ -54,6 +63,7 @@ class LocalCardNotifier {
   }
 
   /// Show a notification for a card: its summary as the title.
+  @override
   Future<void> notifyCard(CardView card) async {
     await _plugin.show(
       id: _nextId++,

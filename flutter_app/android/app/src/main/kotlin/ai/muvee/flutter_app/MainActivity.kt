@@ -16,6 +16,7 @@ class MainActivity : FlutterActivity() {
         }
 
         private const val FOREGROUND_CHANNEL = "ama/foreground"
+        private const val OVERLAY_CHANNEL = "ama/overlay"
     }
 
     private external fun initAndroidContext(context: Context)
@@ -45,6 +46,24 @@ class MainActivity : FlutterActivity() {
                     }
                     "stop" -> {
                         stopService(intent)
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // Bubble "open full inbox" → bring this activity back to the foreground.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, OVERLAY_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "bringToFront" -> {
+                        val intent = Intent(this, MainActivity::class.java).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                                    Intent.FLAG_ACTIVITY_NEW_TASK,
+                            )
+                        }
+                        startActivity(intent)
                         result.success(null)
                     }
                     else -> result.notImplemented()

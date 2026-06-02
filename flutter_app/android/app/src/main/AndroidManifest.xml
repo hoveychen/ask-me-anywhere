@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <!-- Camera for QR pairing-scan (M4 P4). -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Chat-head bubble: draw the assistant overlay on top of other apps. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <application
         android:label="flutter_app"
         android:name="${applicationName}"
@@ -36,6 +39,15 @@
             android:name=".ForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- flutter_overlay_window's chat-head host service. -->
+        <service
+            android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Resident assistant chat-head overlay"/>
+        </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
