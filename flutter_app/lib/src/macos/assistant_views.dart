@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/state/assistant_controller.dart';
+import 'package:flutter_app/src/ui/assistant_visuals.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
 
 AssistantController get _c => AssistantController.instance;
@@ -32,42 +33,8 @@ class AssistantIconView extends StatelessWidget {
           onTap: onTap,
           child: AnimatedBuilder(
             animation: _c.unreadCountListenable,
-            builder: (context, _) {
-              final int n = _c.unreadCountListenable.value;
-              return Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF3D5AFE),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.all_inbox, color: Colors.white),
-                  ),
-                  if (n > 0)
-                    Positioned(
-                      right: -2,
-                      top: -2,
-                      child: Container(
-                        padding: const EdgeInsets.all(5),
-                        constraints:
-                            const BoxConstraints(minWidth: 20, minHeight: 20),
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          n > 99 ? '99+' : '$n',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white, fontSize: 11),
-                        ),
-                      ),
-                    ),
-                ],
-              );
-            },
+            builder: (context, _) =>
+                AssistantBubble(count: _c.unreadCountListenable.value),
           ),
         ),
       ),

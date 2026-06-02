@@ -21,6 +21,7 @@ import 'package:flutter_app/src/android/overlay_bridge.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/state/assistant_surface.dart';
+import 'package:flutter_app/src/ui/assistant_visuals.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
 
 // NOTE: the overlay isolate entry point (`overlayMain`) lives in lib/main.dart,
@@ -166,38 +167,7 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
     return Center(
       child: GestureDetector(
         onTap: () => _go(AssistantSurface.onTapIcon(_pendingIds)),
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: const BoxDecoration(
-                color: Color(0xFF3D5AFE),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(Icons.all_inbox, color: Colors.white),
-            ),
-            if (_snap.unreadCount > 0)
-              Positioned(
-                right: -2,
-                top: -2,
-                child: Container(
-                  padding: const EdgeInsets.all(5),
-                  constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
-                  decoration: const BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Text(
-                    _snap.unreadCount > 99 ? '99+' : '${_snap.unreadCount}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
-                  ),
-                ),
-              ),
-          ],
-        ),
+        child: AssistantBubble(count: _snap.unreadCount),
       ),
     );
   }
@@ -207,11 +177,17 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
   Widget _expanded(BuildContext context) {
     return Stack(
       children: [
-        // Tap-away scrim collapses to the bubble.
+        // Tap-away scrim collapses to the bubble; fades in with the panel.
         Positioned.fill(
           child: GestureDetector(
             onTap: () => _go(AssistantSurface.onCollapse),
-            child: Container(color: Colors.black54),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: 1),
+              duration: kAssistantMotion,
+              curve: kAssistantCurve,
+              builder: (_, t, _) =>
+                  Container(color: Colors.black.withValues(alpha: 0.55 * t)),
+            ),
           ),
         ),
         _panel(context),
@@ -232,16 +208,60 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
     }
   }
 
+  /// A rounded, shadowed surface for the expanded panels.
+  Widget _surfaceChrome(BuildContext context,
+      {required Widget child, required BorderRadius radius}) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        boxShadow: assistantPanelShadow(Theme.of(context).brightness),
+      ),
+      child: Material(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: radius,
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      ),
+    );
+  }
+
+  /// Scale + fade entrance for the centred panels; replays per surface change.
+  Widget _popIn(Key key, Widget child) {
+    return TweenAnimationBuilder<double>(
+      key: key,
+      tween: Tween(begin: 0, end: 1),
+      duration: kAssistantMotion,
+      curve: kAssistantCurve,
+      builder: (_, t, c) => Opacity(
+        opacity: t.clamp(0, 1),
+        child: Transform.scale(scale: 0.94 + 0.06 * t, child: c),
+      ),
+      child: child,
+    );
+  }
+
   /// The inbox as a right-edge drawer (not the full-attention surface).
   Widget _drawerList(BuildContext context) {
+    final radius = const BorderRadius.horizontal(left: Radius.circular(kPanelRadius));
     return Align(
       alignment: Alignment.centerRight,
       child: FractionallySizedBox(
         widthFactor: 0.82,
         heightFactor: 1,
-        child: Material(
-          color: Theme.of(context).colorScheme.surface,
-          child: SafeArea(child: _cardListBody(context, 'Inbox')),
+        child: TweenAnimationBuilder<double>(
+          key: const ValueKey('drawer'),
+          tween: Tween(begin: 0, end: 1),
+          duration: kAssistantMotion,
+          curve: kAssistantCurve,
+          builder: (_, t, c) => FractionalTranslation(
+            translation: Offset(1 - t, 0),
+            child: c,
+          ),
+          child: _surfaceChrome(
+            context,
+            radius: radius,
+            child: SafeArea(child: _cardListBody(context, 'Inbox')),
+          ),
         ),
       ),
     );
@@ -253,11 +273,13 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
       child: FractionallySizedBox(
         widthFactor: 0.86,
         heightFactor: 0.7,
-        child: Material(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(16),
-          clipBehavior: Clip.antiAlias,
-          child: _cardListBody(context, title),
+        child: _popIn(
+          const ValueKey('picker'),
+          _surfaceChrome(
+            context,
+            radius: BorderRadius.circular(kPanelRadius),
+            child: _cardListBody(context, title),
+          ),
         ),
       ),
     );
@@ -316,11 +338,12 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
       child: FractionallySizedBox(
         widthFactor: 0.92,
         heightFactor: 0.86,
-        child: Material(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(16),
-          clipBehavior: Clip.antiAlias,
-          child: Column(
+        child: _popIn(
+          ValueKey('card:${card.id}'),
+          _surfaceChrome(
+            context,
+            radius: BorderRadius.circular(kPanelRadius),
+            child: Column(
             children: [
               AppBar(
                 title: Text(card.summary,
@@ -344,7 +367,7 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
               ),
               Expanded(
                 child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(20),
                   child: CardDetailView(
                     card: view,
                     onAction: (action) {
@@ -358,6 +381,7 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
                 ),
               ),
             ],
+            ),
           ),
         ),
       ),
