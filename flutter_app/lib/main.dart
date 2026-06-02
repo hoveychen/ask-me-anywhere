@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, Tar
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:flutter_app/src/android/overlay_bubble.dart';
 import 'package:flutter_app/src/android/overlay_host.dart';
 import 'package:flutter_app/src/macos/assistant_views.dart';
 import 'package:flutter_app/src/macos/assistant_window.dart';
@@ -27,6 +28,15 @@ import 'package:flutter_app/src/ui/pairing_screen.dart';
 bool get _isMacOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 bool get _isAndroid =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+/// The Android chat-head overlay runs in its own engine/isolate. The plugin
+/// resolves this entry point by name in the ROOT library only, so it MUST live
+/// here in main.dart (not alongside the widget in lib/src/android/).
+@pragma('vm:entry-point')
+void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const OverlayBubbleApp());
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -91,6 +101,9 @@ class _RootShellState extends State<RootShell>
     if (_isAndroid) {
       WidgetsBinding.instance.addObserver(this);
       _overlayHost = OverlayHost(AssistantController.instance);
+      // Start the chat-head from the foreground (first frame), where starting
+      // the overlay's foreground service is allowed.
+      WidgetsBinding.instance.addPostFrameCallback((_) => _overlayHost?.show());
     }
   }
 
@@ -109,19 +122,12 @@ class _RootShellState extends State<RootShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (!_isAndroid) return;
-    // Resident assistant: show the chat-head bubble while the app is away,
-    // hide it when the user is back in the full inbox.
-    switch (state) {
-      case AppLifecycleState.paused:
-      case AppLifecycleState.hidden:
-        _overlayHost?.show();
-        break;
-      case AppLifecycleState.resumed:
-        _overlayHost?.hide();
-        break;
-      case AppLifecycleState.inactive:
-      case AppLifecycleState.detached:
-        break;
+    // Start the resident chat-head while the app is in the FOREGROUND — Android
+    // 12+ forbids starting the overlay's foreground service from the background,
+    // so we can't wait for `paused`. Once started it persists over other apps;
+    // we don't close it on pause.
+    if (state == AppLifecycleState.resumed) {
+      _overlayHost?.show();
     }
   }
 

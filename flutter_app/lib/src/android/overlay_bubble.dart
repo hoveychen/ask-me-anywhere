@@ -22,11 +22,11 @@ import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/state/assistant_surface.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
 
-/// Entry point launched by flutter_overlay_window in the overlay isolate.
-@pragma('vm:entry-point')
-void overlayMain() {
-  runApp(const OverlayBubbleApp());
-}
+// NOTE: the overlay isolate entry point (`overlayMain`) lives in lib/main.dart,
+// NOT here. flutter_overlay_window resolves the "overlayMain" Dart entry by name
+// in the ROOT library only — DartEntrypoint(bundlePath, "overlayMain") — so a
+// top-level function in this (non-root) library is never found, leaving the
+// overlay window blank. Keep the entry in main.dart.
 
 const int _bubblePx = 72;
 
@@ -88,8 +88,10 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
   Future<void> _go(AssistantSurfaceState state) async {
     setState(() => _surface = state);
     if (state.isExpanded) {
+      // Full-screen: MATCH_PARENT for BOTH dims. (fullCover is a showOverlay-only
+      // sentinel; passing it to resizeOverlay sets a bogus literal height.)
       await FlutterOverlayWindow.resizeOverlay(
-          WindowSize.matchParent, WindowSize.fullCover, false);
+          WindowSize.matchParent, WindowSize.matchParent, false);
     } else {
       await FlutterOverlayWindow.resizeOverlay(_bubblePx, _bubblePx, true);
     }
