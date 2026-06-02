@@ -47,6 +47,9 @@ dependencies:
   mobile_scanner: ^7.2.0
   # macOS Dock-resident floating-assistant window (frameless / always-on-top).
   window_manager: ^0.4.3
+  # Android chat-head bubble (SYSTEM_ALERT_WINDOW overlay) + its permission gate.
+  flutter_overlay_window: ^0.4.5
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

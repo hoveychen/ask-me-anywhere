@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'package:flutter_app/src/android/overlay_host.dart';
 import 'package:flutter_app/src/macos/assistant_window.dart';
 import 'package:flutter_app/src/macos/dock_badge.dart';
 import 'package:flutter_app/src/macos/floating_assistant_view.dart';
@@ -25,6 +26,7 @@ import 'package:flutter_app/src/ui/join_screen.dart';
 import 'package:flutter_app/src/ui/pairing_screen.dart';
 
 bool get _isMacOS => !kIsWeb && Platform.isMacOS;
+bool get _isAndroid => !kIsWeb && Platform.isAndroid;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -59,9 +61,11 @@ class RootShell extends StatefulWidget {
   State<RootShell> createState() => _RootShellState();
 }
 
-class _RootShellState extends State<RootShell> with WindowListener {
+class _RootShellState extends State<RootShell>
+    with WindowListener, WidgetsBindingObserver {
   final AssistantWindowManager _window = AssistantWindowManager();
   AssistantMode _mode = AssistantMode.list;
+  OverlayHost? _overlayHost;
 
   @override
   void initState() {
@@ -73,6 +77,10 @@ class _RootShellState extends State<RootShell> with WindowListener {
       AssistantController.instance.badge = DockBadge();
       AssistantController.instance.onNewCard = (_) => _enterFloating();
     }
+    if (_isAndroid) {
+      WidgetsBinding.instance.addObserver(this);
+      _overlayHost = OverlayHost(AssistantController.instance);
+    }
   }
 
   @override
@@ -81,7 +89,30 @@ class _RootShellState extends State<RootShell> with WindowListener {
       windowManager.removeListener(this);
       AssistantController.instance.onNewCard = null;
     }
+    if (_isAndroid) {
+      WidgetsBinding.instance.removeObserver(this);
+      _overlayHost?.dispose();
+    }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_isAndroid) return;
+    // Resident assistant: show the chat-head bubble while the app is away,
+    // hide it when the user is back in the full inbox.
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        _overlayHost?.show();
+        break;
+      case AppLifecycleState.resumed:
+        _overlayHost?.hide();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.detached:
+        break;
+    }
   }
 
   @override

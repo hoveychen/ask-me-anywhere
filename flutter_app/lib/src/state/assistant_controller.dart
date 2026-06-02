@@ -266,6 +266,22 @@ class AssistantController extends ChangeNotifier {
     );
   }
 
+  /// Current converged value at each bound path for a card. Used to seed the
+  /// Android overlay snapshot (the overlay isolate can't read the CRDT itself).
+  Future<Map<String, Object?>> cardData(
+    String cardId,
+    List<String> paths,
+  ) async {
+    final inbox = _inbox;
+    final Map<String, Object?> out = {};
+    if (inbox == null) return out;
+    for (final String path in paths) {
+      final String? json = await inbox.getData(msgId: cardId, bindPath: path);
+      if (json != null) out[path] = jsonDecode(json);
+    }
+    return out;
+  }
+
   /// Live data-model updates for one card, derived from the inbox event stream:
   /// on any `data` event for this card (or a `tick` marking freshly-synced
   /// remote content as readable), re-pull each declared bind path and emit it.
