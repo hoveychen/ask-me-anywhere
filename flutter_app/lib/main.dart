@@ -6,9 +6,7 @@
 // same inbox; this list page is one observer of it. Tapping a card opens its
 // live A2UI surface, where actions (Approve / Dismiss) and bound-field edits
 // flow back into the CRDT. M3c adds QR pairing + native notifications.
-import 'dart:io' show Platform;
-
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -25,8 +23,9 @@ import 'package:flutter_app/src/ui/card_detail_view.dart';
 import 'package:flutter_app/src/ui/join_screen.dart';
 import 'package:flutter_app/src/ui/pairing_screen.dart';
 
-bool get _isMacOS => !kIsWeb && Platform.isMacOS;
-bool get _isAndroid => !kIsWeb && Platform.isAndroid;
+bool get _isMacOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
+bool get _isAndroid =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
