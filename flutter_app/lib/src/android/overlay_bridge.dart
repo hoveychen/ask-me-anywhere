@@ -44,10 +44,23 @@ class OverlayCard {
 
 /// What the overlay isolate receives each push.
 class OverlaySnapshot {
-  const OverlaySnapshot({required this.unreadCount, required this.cards});
+  const OverlaySnapshot({
+    required this.unreadCount,
+    required this.cards,
+    this.screenWidth = 0,
+    this.screenHeight = 0,
+  });
 
   final int unreadCount;
   final List<OverlayCard> cards;
+
+  /// Logical-pixel (dp) size of the device screen, measured on the main isolate
+  /// (the overlay's own view only spans the bubble, so it can't measure this
+  /// itself). The overlay needs concrete dp to go full-screen: resizeOverlay()
+  /// cannot set a MATCH_PARENT height — the plugin's height branch is a
+  /// tautology that always runs dpToPx(height) — so we pass the real height.
+  final double screenWidth;
+  final double screenHeight;
 }
 
 /// Serialize one card for the wire. [dataValues] is the host's best-effort
@@ -81,12 +94,21 @@ OverlayCard _cardFromJson(Map<Object?, Object?> m) {
   );
 }
 
-/// Build the snapshot the host pushes to the overlay.
+/// Build the snapshot the host pushes to the overlay. [screenWidth] /
+/// [screenHeight] are the device's logical-pixel size (see [OverlaySnapshot]).
 Map<String, Object?> snapshotToJson(
   int unreadCount,
-  List<Map<String, Object?>> cards,
-) {
-  return {'type': 'cards', 'unreadCount': unreadCount, 'cards': cards};
+  List<Map<String, Object?>> cards, {
+  double screenWidth = 0,
+  double screenHeight = 0,
+}) {
+  return {
+    'type': 'cards',
+    'unreadCount': unreadCount,
+    'cards': cards,
+    'screenWidth': screenWidth,
+    'screenHeight': screenHeight,
+  };
 }
 
 /// Parse a snapshot on the overlay side; null if [msg] isn't a cards snapshot.
@@ -99,6 +121,8 @@ OverlaySnapshot? parseSnapshot(dynamic msg) {
         .whereType<Map>()
         .map((e) => _cardFromJson(e.cast<Object?, Object?>()))
         .toList(growable: false),
+    screenWidth: (msg['screenWidth'] as num?)?.toDouble() ?? 0,
+    screenHeight: (msg['screenHeight'] as num?)?.toDouble() ?? 0,
   );
 }
 

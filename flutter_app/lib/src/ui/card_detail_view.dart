@@ -72,12 +72,35 @@ class _CardDetailViewState extends State<CardDetailView> {
   }
 
   @override
+  void didUpdateWidget(CardDetailView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When the surface switches to a different card (e.g. the floating overlay
+    // advances to the next pending card after one is actioned), rebuild from
+    // the new A2UI instead of leaving the previous card's surface mounted.
+    if (oldWidget.card.id != widget.card.id ||
+        oldWidget.card.a2UiJson != widget.card.a2UiJson) {
+      _teardownSurface();
+      _buildSurface();
+    }
+  }
+
+  @override
   void dispose() {
+    _teardownSurface();
+    super.dispose();
+  }
+
+  void _teardownSurface() {
     _remoteSub?.cancel();
     _dataBridge?.dispose();
     _actionSub?.cancel();
     _controller?.dispose();
-    super.dispose();
+    _remoteSub = null;
+    _dataBridge = null;
+    _actionSub = null;
+    _controller = null;
+    _surfaceId = null;
+    _error = null;
   }
 
   /// Parse the payload and feed it into a fresh controller. Any failure leaves
