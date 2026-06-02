@@ -37,6 +37,13 @@ const int _bubblePx = 72;
 // `updateOverlayPosition` on this channel, so we drive position resets directly.
 const MethodChannel _overlayServiceCh = MethodChannel('x-slayer/overlay');
 
+// Overlay → main command channel. shareData can't deliver overlay → main (the
+// plugin's WindowSetup.messenger static is clobbered by the overlay engine, so
+// commands loop back here), so commands ride a native relay instead: this
+// MethodChannel is handled by a forwarder MainActivity registers on the overlay
+// engine, which hops the payload into the main engine. See MainActivity.kt.
+const MethodChannel _cmdCh = MethodChannel('ama/overlay_cmd');
+
 class OverlayBubbleApp extends StatefulWidget {
   const OverlayBubbleApp({super.key});
 
@@ -89,8 +96,7 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
     return null;
   }
 
-  void _send(Map<String, Object?> command) =>
-      FlutterOverlayWindow.shareData(command);
+  void _send(Map<String, Object?> command) => _cmdCh.invokeMethod('cmd', command);
 
   Future<void> _go(AssistantSurfaceState state) async {
     setState(() => _surface = state);

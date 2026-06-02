@@ -20,9 +20,12 @@ class OverlayHost {
   OverlayHost(this._controller);
 
   static const MethodChannel _appChannel = MethodChannel('ama/overlay');
+  // Main-engine end of the overlay→main command relay (see MainActivity.kt and
+  // overlay_bubble.dart). The overlay can't reach us via shareData, so its
+  // commands are forwarded here through native.
+  static const MethodChannel _cmdChannel = MethodChannel('ama/overlay_cmd');
 
   final AssistantController _controller;
-  StreamSubscription<dynamic>? _cmdSub;
   bool _shown = false;
   bool _pushing = false;
 
@@ -44,9 +47,26 @@ class OverlayHost {
       overlayContent: 'Assistant',
     );
     _shown = true;
-    _cmdSub ??= FlutterOverlayWindow.overlayListener.listen(_onCommand);
+    _cmdChannel.setMethodCallHandler(_onCmdCall);
+    await _attachRelay();
     _controller.addListener(_pushSnapshot);
     await _pushSnapshotAsync();
+  }
+
+  /// Ask the activity to wire the overlay→main relay onto the overlay engine.
+  /// The overlay engine is created by showOverlay() above, but caching can lag,
+  /// so retry a few times before giving up.
+  Future<void> _attachRelay() async {
+    for (int i = 0; i < 10; i++) {
+      final bool ok =
+          await _appChannel.invokeMethod<bool>('attachOverlayRelay') ?? false;
+      if (ok) return;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+  }
+
+  Future<void> _onCmdCall(MethodCall call) async {
+    if (call.method == 'cmd') await _onCommand(call.arguments);
   }
 
   /// Hide the bubble (e.g. when the app returns to the foreground).
@@ -59,8 +79,7 @@ class OverlayHost {
 
   Future<void> dispose() async {
     _controller.removeListener(_pushSnapshot);
-    await _cmdSub?.cancel();
-    _cmdSub = null;
+    _cmdChannel.setMethodCallHandler(null);
   }
 
   // ChangeNotifier callback is sync; kick the async push without awaiting.
