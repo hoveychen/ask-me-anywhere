@@ -14,4 +14,4 @@ pub use model::{
     data_key, msg_key, parse_key, state_key, status_for_action, KeyKind, MessageCard,
     MessageState, Status,
 };
-pub use net::{build_endpoint, RelayChoice};
+pub use net::{build_endpoint, load_or_create_secret_key, RelayChoice};
