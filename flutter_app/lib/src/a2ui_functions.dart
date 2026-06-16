@@ -12,15 +12,19 @@ import 'package:genui/genui.dart'
         SynchronousClientFunction;
 import 'package:json_schema_builder/json_schema_builder.dart';
 
+import 'package:flutter_app/src/ui/ama_choice.dart';
+
 /// Name of the [AllAnsweredFunction] as referenced in A2UI `checks` conditions.
 const String allAnsweredFn = 'allAnswered';
 
 /// Name of the [SetDataFunction] as referenced in A2UI `functionCall` actions.
 const String setDataFn = 'setData';
 
-/// The catalog used to render every card: the basic genui widget set plus
-/// AMA's client functions. Built once and shared by [CardDetailView] and tests.
+/// The catalog used to render every card: the basic genui widget set, AMA's
+/// custom components (e.g. [amaChoice]), plus AMA's client functions. Built
+/// once and shared by [CardDetailView] and tests.
 final Catalog cardCatalog = BasicCatalogItems.asCatalog().copyWith(
+  newItems: [amaChoice],
   newFunctions: const [AllAnsweredFunction(), SetDataFunction()],
 );
 
