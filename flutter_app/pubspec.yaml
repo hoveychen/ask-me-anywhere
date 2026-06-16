@@ -48,6 +48,8 @@ dependencies:
   qr_flutter: ^4.1.0
   flutter_local_notifications: ^21.0.0
   mobile_scanner: ^7.2.0
+  # Cross-platform image/file picker for the AmaAttachment card component.
+  file_picker: ^11.0.0
   # macOS floating-assistant windows (frameless / always-on-top) + screen size
   # for the centred large-card layout.
   window_manager: ^0.4.3

@@ -12,6 +12,7 @@ import 'package:genui/genui.dart'
         SynchronousClientFunction;
 import 'package:json_schema_builder/json_schema_builder.dart';
 
+import 'package:flutter_app/src/ui/ama_attachment.dart';
 import 'package:flutter_app/src/ui/ama_choice.dart';
 
 /// Name of the [AllAnsweredFunction] as referenced in A2UI `checks` conditions.
@@ -27,7 +28,7 @@ const String setDataFn = 'setData';
 /// custom components (e.g. [amaChoice]), plus AMA's client functions. Built
 /// once and shared by [CardDetailView] and tests.
 final Catalog cardCatalog = BasicCatalogItems.asCatalog().copyWith(
-  newItems: [amaChoice],
+  newItems: [amaChoice, amaAttachment],
   newFunctions: const [
     AllAnsweredFunction(),
     AnyAnsweredFunction(),
