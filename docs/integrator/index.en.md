@@ -11,6 +11,18 @@ Two paths:
 
 A is the script glue, B is the daemon. Both consume the same [CardInput JSON shape](#cardinput-json), so the "event → A2UI card" transform you write once works on either surface.
 
+## 0. Quickstart — see a real card in one command {#0-quickstart}
+
+To prove the path end-to-end (instead of the app's debug "Push test card"), grab your inbox's pairing ticket — the Flutter app's empty inbox shows a **Connect a source** button that opens it, or run `ama create` — and feed it a real GitHub PR card:
+
+```bash
+scripts/connect-source-demo.sh --ticket docaaa…   # add --token <BEARER> if your bridge uses one
+```
+
+It builds `ama`, starts `ama serve` against that ticket, POSTs `scripts/sample-github-pr.json` through the GitHub adapter, then keeps the bridge live so the card syncs to your devices. Open the app — the PR card lands in the inbox. The rest of this guide is the reference behind that script.
+
+> **Persistence (`--data-dir`).** `ama create`/`join`/`send`/`serve` take an optional `--data-dir <path>`. With it the node stores the inbox (and its identity) on disk, so messages survive a restart and the node-id / ticket stay stable. Without it the node is in-memory and ephemeral (the historical default). The Flutter app always persists, under its app-support dir.
+
 ## 1. `ama send` — one-shot from a script {#1-ama-send-one-shot-from-a-script}
 
 ```bash
@@ -43,7 +55,7 @@ curl -s https://api.example.com/event | jq '...' | \
 
 ### Caveat: in-memory replica
 
-`ama send` is a one-shot process and its inbox replica is in-memory (`MemStore`). Once the process exits, that replica is gone. Push therefore needs to **gossip to at least one live peer before exit** (`--wait-secs` is that window). If the window is too short and no peer is online, the card is lost. For reliable delivery, use `ama serve` instead.
+By default `ama send` is a one-shot process and its inbox replica is in-memory. Once the process exits, that replica is gone. Push therefore needs to **gossip to at least one live peer before exit** (`--wait-secs` is that window). If the window is too short and no peer is online, the card is lost. Passing `--data-dir <path>` makes the replica durable on disk so the entry survives the process and resends next time, but the more reliable pattern for unattended delivery is still `ama serve`.
 
 ## 2. `ama serve` — long-running webhook {#2-ama-serve-long-running-webhook}
 

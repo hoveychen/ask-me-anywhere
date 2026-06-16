@@ -1,0 +1,11 @@
+{
+  "action": "opened",
+  "pull_request": {
+    "number": 42,
+    "title": "Add retry to the upload path",
+    "body": "Wraps the S3 upload in an exponential backoff so transient 503s don't fail the job. Adds a unit test for the backoff schedule.",
+    "html_url": "https://github.com/acme/widgets/pull/42",
+    "user": { "login": "octocat" }
+  },
+  "repository": { "full_name": "acme/widgets" }
+}
