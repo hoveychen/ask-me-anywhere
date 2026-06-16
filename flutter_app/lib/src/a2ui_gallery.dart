@@ -614,6 +614,34 @@ String _planApproval(String surfaceId) => _card(
   ],
 );
 
+/// Attachment card — attach an image (Fleet's elicitation attachment). The
+/// AmaAttachment field base64-encodes the picked image into `/shot`, which
+/// rides the CRDT to every device; Confirm submits.
+String _attachment(String surfaceId) => _card(
+  surfaceId: surfaceId,
+  seeds: const {'/shot': ''},
+  components: [
+    {
+      'id': 'root',
+      'component': 'Column',
+      'children': ['heading', 'shot', 'actions'],
+    },
+    {
+      'id': 'heading',
+      'component': 'Text',
+      'text': 'Attach a screenshot',
+      'variant': 'h3',
+    },
+    {
+      'id': 'shot',
+      'component': 'AmaAttachment',
+      'label': 'Screenshot',
+      'value': {'path': '/shot'},
+    },
+    ..._actionRow(),
+  ],
+);
+
 /// The full gallery the debug FAB cycles through, in display order. The first
 /// entry is the multi-question wizard; the last reuses the original sample
 /// (heading + note field + Approve/Dismiss).
@@ -625,6 +653,7 @@ List<GalleryCard> galleryCards = [
   GalleryCard(title: 'Form', build: _form),
   GalleryCard(title: 'Guard', build: _guard),
   GalleryCard(title: 'Plan approval', build: _planApproval),
+  GalleryCard(title: 'Attachment', build: _attachment),
   GalleryCard(
     title: 'Note',
     build: (surfaceId) => sampleA2uiJson(surfaceId: surfaceId, title: 'Note'),
