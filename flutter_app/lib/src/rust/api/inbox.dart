@@ -6,34 +6,55 @@
 import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `classify_key`, `uuid_like`
+// These functions are ignored because they are not marked as `pub`: `classify_key`, `persistent_endpoint`, `uuid_like`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_receiver_is_total_eq`, `clone`, `clone`, `clone`, `eq`, `fmt`, `fmt`, `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<InboxHandle>>
 abstract class InboxHandle implements RustOpaqueInterface {
-  /// Spin up a fresh inbox node. Uses n0's default relays for now — M3b/c
-  /// will plumb the relay choice through to Dart.
-  static Future<InboxHandle> create({required String device}) =>
-      RustLib.instance.api.crateApiInboxInboxHandleCreate(device: device);
+  /// Create a brand-new persistent inbox node rooted at `data_dir`. Messages,
+  /// state and the device identity all live on disk under that dir, so they
+  /// survive a restart (reopen later with [`open`]). Uses n0's default relays
+  /// for now — a later milestone plumbs the relay choice through to Dart.
+  static Future<InboxHandle> create({
+    required String device,
+    required String dataDir,
+  }) => RustLib.instance.api.crateApiInboxInboxHandleCreate(
+    device: device,
+    dataDir: dataDir,
+  );
 
   /// Read the current converged value at a card's data-model path as a JSON
   /// string, or `None` if unset locally yet.
   Future<String?> getData({required String msgId, required String bindPath});
 
   /// Join an existing inbox from a serialized pairing ticket string — the QR /
-  /// paste payload another device produced via [`ticket`]. Spins up a fresh
-  /// node that imports the shared doc and starts syncing.
+  /// paste payload another device produced via [`ticket`]. Spins up a node
+  /// rooted at `data_dir` that imports the shared doc, starts syncing, and
+  /// persists it so the join survives a restart.
   static Future<InboxHandle> join({
     required String ticket,
     required String device,
+    required String dataDir,
   }) => RustLib.instance.api.crateApiInboxInboxHandleJoin(
     ticket: ticket,
     device: device,
+    dataDir: dataDir,
   );
 
   /// All cards present in the local replica, newest first, each paired with
   /// its converged [`CardStatus`].
   Future<List<CardView>> listMessages();
+
+  /// Reopen the persistent inbox previously created/joined under `data_dir`,
+  /// or `None` if this dir has never held one. An app boots by trying `open`
+  /// first and falling back to [`create`].
+  static Future<InboxHandle?> open({
+    required String device,
+    required String dataDir,
+  }) => RustLib.instance.api.crateApiInboxInboxHandleOpen(
+    device: device,
+    dataDir: dataDir,
+  );
 
   /// Push a new actionable card. `a2ui_json` is the A2UI message tree
   /// serialized as JSON; pass `"{}"` if you don't have one yet.

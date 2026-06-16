@@ -5,6 +5,7 @@
 //! `a2ui` payload crosses the FFI as a JSON string because `serde_json::Value`
 //! has no FRB primitive — Dart parses or builds it with `dart:convert`.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -12,11 +13,20 @@ use flutter_rust_bridge::frb;
 use futures_lite::StreamExt;
 
 use ama_core::{
-    build_endpoint, now_ms, parse_key, Inbox, KeyKind, LiveEvent, MessageCard, RelayChoice,
-    Status,
+    build_endpoint, load_or_create_secret_key, now_ms, parse_key, Endpoint, Inbox, KeyKind,
+    LiveEvent, MessageCard, RelayChoice, Status,
 };
 
 use crate::frb_generated::StreamSink;
+
+/// Build a persistent iroh endpoint for the inbox rooted at `data_dir`: load (or
+/// first-time generate) the device's long-term secret key from
+/// `<data_dir>/node-key`, so the node-id and pairing ticket stay stable across
+/// app restarts.
+async fn persistent_endpoint(data_dir: &Path) -> Result<Endpoint> {
+    let key = load_or_create_secret_key(&data_dir.join("node-key"))?;
+    build_endpoint(RelayChoice::N0, Some(key)).await
+}
 
 /// Opaque handle to a running inbox node, held by Dart between calls.
 pub struct InboxHandle {
@@ -57,22 +67,38 @@ impl From<Status> for CardStatus {
 }
 
 impl InboxHandle {
-    /// Spin up a fresh inbox node. Uses n0's default relays for now — M3b/c
-    /// will plumb the relay choice through to Dart.
+    /// Create a brand-new persistent inbox node rooted at `data_dir`. Messages,
+    /// state and the device identity all live on disk under that dir, so they
+    /// survive a restart (reopen later with [`open`]). Uses n0's default relays
+    /// for now — a later milestone plumbs the relay choice through to Dart.
     #[frb]
-    pub async fn create(device: String) -> Result<InboxHandle> {
-        let endpoint = build_endpoint(RelayChoice::N0).await?;
-        let inbox = Inbox::create(endpoint, device).await?;
+    pub async fn create(device: String, data_dir: String) -> Result<InboxHandle> {
+        let dir = PathBuf::from(data_dir);
+        let endpoint = persistent_endpoint(&dir).await?;
+        let inbox = Inbox::create(endpoint, device, Some(&dir)).await?;
         Ok(InboxHandle { inner: Arc::new(inbox) })
     }
 
-    /// Join an existing inbox from a serialized pairing ticket string — the QR /
-    /// paste payload another device produced via [`ticket`]. Spins up a fresh
-    /// node that imports the shared doc and starts syncing.
+    /// Reopen the persistent inbox previously created/joined under `data_dir`,
+    /// or `None` if this dir has never held one. An app boots by trying `open`
+    /// first and falling back to [`create`].
     #[frb]
-    pub async fn join(ticket: String, device: String) -> Result<InboxHandle> {
-        let endpoint = build_endpoint(RelayChoice::N0).await?;
-        let inbox = Inbox::join_ticket(endpoint, &ticket, device).await?;
+    pub async fn open(device: String, data_dir: String) -> Result<Option<InboxHandle>> {
+        let dir = PathBuf::from(data_dir);
+        let endpoint = persistent_endpoint(&dir).await?;
+        let inbox = Inbox::open(endpoint, device, &dir).await?;
+        Ok(inbox.map(|inbox| InboxHandle { inner: Arc::new(inbox) }))
+    }
+
+    /// Join an existing inbox from a serialized pairing ticket string — the QR /
+    /// paste payload another device produced via [`ticket`]. Spins up a node
+    /// rooted at `data_dir` that imports the shared doc, starts syncing, and
+    /// persists it so the join survives a restart.
+    #[frb]
+    pub async fn join(ticket: String, device: String, data_dir: String) -> Result<InboxHandle> {
+        let dir = PathBuf::from(data_dir);
+        let endpoint = persistent_endpoint(&dir).await?;
+        let inbox = Inbox::join_ticket(endpoint, &ticket, device, Some(&dir)).await?;
         Ok(InboxHandle { inner: Arc::new(inbox) })
     }
 

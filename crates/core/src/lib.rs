@@ -9,6 +9,7 @@ pub mod model;
 pub mod net;
 
 pub use inbox::{now_ms, Inbox};
+pub use iroh::Endpoint;
 pub use iroh_docs::engine::LiveEvent;
 pub use model::{
     data_key, msg_key, parse_key, state_key, status_for_action, KeyKind, MessageCard,
