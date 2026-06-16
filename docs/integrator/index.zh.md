@@ -11,6 +11,18 @@
 
 A 是脚本胶,B 是常驻服务。两者都用同一个 [CardInput JSON 结构](#cardinput-json),所以你写一次"事件 → A2UI 卡片"的转换就能在两个面都用。
 
+## 0. 快速上手 — 一条命令看到真卡 {#0-快速上手}
+
+想端到端验证真实链路(而不是 App 里的调试"Push test card"):拿到收件箱的配对 ticket —— Flutter App 空收件箱有个 **Connect a source** 按钮能打开它,或者直接 `ama create` —— 然后喂它一张真的 GitHub PR 卡:
+
+```bash
+scripts/connect-source-demo.sh --ticket docaaa…   # 桥用了 token 就加 --token <BEARER>
+```
+
+脚本会构建 `ama`、对着该 ticket 起 `ama serve`、把 `scripts/sample-github-pr.json` 经 GitHub 适配器 POST 进去,然后保持桥常驻,让卡片 sync 到你的设备。打开 App,这张 PR 卡就落进收件箱了。本指南余下部分就是这个脚本背后的参考。
+
+> **持久化(`--data-dir`)。** `ama create`/`join`/`send`/`serve` 都接受可选的 `--data-dir <path>`。带上它,节点会把收件箱(及身份)落盘,消息重启不丢、node-id / ticket 跨重启稳定;不带则是内存态、退出即丢(历史默认)。Flutter App 始终持久化,落在它的 app-support 目录下。
+
 ## 1. `ama send` — 脚本一次性推送 {#1-ama-send-脚本一次性推送}
 
 ```bash
@@ -43,7 +55,7 @@ curl -s https://api.example.com/event | jq '...' | \
 
 ### 风险:in-memory replica
 
-`ama send` 是一次性进程,它的 inbox 副本是内存里的(`MemStore`)。进程退出后这份副本就没了。因此 push 必须在退出前 **gossip 到至少一个 alive peer**(`--wait-secs` 控制这个窗口)。如果窗口太短而对端没在线,卡片丢失。要长期可靠,使用 `ama serve` 而不是 `ama send`。
+默认下 `ama send` 是一次性进程,inbox 副本在内存里。进程退出后这份副本就没了,因此 push 必须在退出前 **gossip 到至少一个 alive peer**(`--wait-secs` 控制这个窗口)。如果窗口太短而对端没在线,卡片丢失。加 `--data-dir <path>` 可让副本落盘、退出后仍在并下次重发;但无人值守的可靠投递,仍推荐用 `ama serve`。
 
 ## 2. `ama serve` — 长跑 webhook 服务 {#2-ama-serve-长跑-webhook-服务}
 

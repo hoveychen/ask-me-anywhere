@@ -6,7 +6,8 @@
 // same inbox; this list page is one observer of it. Tapping a card opens its
 // live A2UI surface, where actions (Approve / Dismiss) and bound-field edits
 // flow back into the CRDT. M3c adds QR pairing + native notifications.
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, kIsWeb, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kDebugMode, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -272,21 +273,23 @@ class _InboxViewState extends State<InboxView> {
               ),
             ],
           ),
-          floatingActionButton: FloatingActionButton.extended(
-            onPressed: ready ? _controller.pushDebugCard : null,
-            icon: const Icon(Icons.add),
-            label: const Text('Push test card'),
-          ),
+          // Debug-only affordance: cycle the gallery so each renderer is easy
+          // to exercise during development. Hidden in release builds, where the
+          // inbox is fed by real sources over P2P (see _ConnectSourcePrompt).
+          floatingActionButton: kDebugMode
+              ? FloatingActionButton.extended(
+                  onPressed: ready ? _controller.pushDebugCard : null,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Push test card'),
+                )
+              : null,
           body: _controller.booting
               ? const Center(child: CircularProgressIndicator())
               : _controller.error != null
                   ? Center(child: Text('boot failed: ${_controller.error}'))
                   : cards.isEmpty
-                      ? const Center(
-                          child: Text(
-                            '(no cards yet — press the button)',
-                            style: TextStyle(fontStyle: FontStyle.italic),
-                          ),
+                      ? _ConnectSourcePrompt(
+                          onConnect: ready ? _openPairing : null,
                         )
                       : ListView.builder(
                           itemCount: cards.length,
@@ -337,4 +340,65 @@ class _CardTile extends StatelessWidget {
 
   String _formatTime(DateTime t) =>
       '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+}
+
+/// Empty-inbox onboarding. Cards arrive from a *source* — another device or a
+/// webhook bridge (`ama serve`) — that joins this inbox over P2P and pushes into
+/// it. This prompt points the user at that path (pair a device / wire a bridge)
+/// instead of leaving them at a dead-end "no cards" screen. [onConnect] opens
+/// the pairing screen (QR + copyable ticket); null while the node is still
+/// booting.
+class _ConnectSourcePrompt extends StatelessWidget {
+  const _ConnectSourcePrompt({required this.onConnect});
+
+  final VoidCallback? onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.inbox_outlined,
+                  size: 56, color: theme.colorScheme.primary),
+              const SizedBox(height: 16),
+              Text('No cards yet', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(
+                'Cards arrive from a connected source over P2P — another '
+                'device, or a webhook bridge running `ama serve` against this '
+                'inbox. Connect one to start receiving.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: onConnect,
+                icon: const Icon(Icons.qr_code),
+                label: const Text('Connect a source'),
+              ),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'ama serve --ticket <this inbox\'s ticket>',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

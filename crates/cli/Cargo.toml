@@ -25,3 +25,5 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+# test-utils gives run_relay_server() for the two-node real-source sync test.
+iroh = { version = "0.98.2", features = ["test-utils"] }
