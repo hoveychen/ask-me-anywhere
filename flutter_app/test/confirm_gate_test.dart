@@ -1,8 +1,7 @@
-// Regression: the multi-question wizard must NOT let you Confirm before every
-// question is answered (Fleet's AskUserQuestion disables Submit until then).
-// Drives the real widgets the way a user would — pick a radio, switch tabs,
-// tick a checkbox, type the free-text answer — and watches Confirm flip from
-// disabled to enabled only once all three questions are answered.
+// Regression: the multi-question wizard steps through one question per tab — a
+// "Next" button (gated on the current question) advances the tab, and only the
+// last tab's "Confirm" appears, gated on every question being answered. You can
+// never Confirm with an unanswered question (Fleet's AskUserQuestion model).
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -20,12 +19,18 @@ CardView _card(String a2UiJson) => CardView(
       status: CardStatus.unread,
     );
 
-bool _confirmEnabled(WidgetTester tester) {
-  final button = tester.widget<ElevatedButton>(
-    find.widgetWithText(ElevatedButton, 'Confirm'),
-  );
-  return button.onPressed != null;
-}
+// genui's Tabs only builds the active tab's content, so the Confirm button
+// exists solely on the last tab and Next solely on the others — exactly the
+// "the button becomes Confirm at the end" shape.
+bool _confirmEnabled(WidgetTester tester) =>
+    tester
+        .widget<ElevatedButton>(find.widgetWithText(ElevatedButton, 'Confirm'))
+        .onPressed !=
+    null;
+
+final Finder _next = find.widgetWithText(ElevatedButton, 'Next →');
+bool _nextEnabled(WidgetTester tester) =>
+    tester.widget<ElevatedButton>(_next).onPressed != null;
 
 void main() {
   group('isAnswered', () {
@@ -42,7 +47,7 @@ void main() {
     });
   });
 
-  testWidgets('Confirm stays disabled until every question is answered',
+  testWidgets('Next advances per tab; Confirm appears only on the last tab',
       (tester) async {
     final entry = galleryCards.firstWhere((c) => c.title == 'Multi-question');
     await tester.pumpWidget(MaterialApp(
@@ -50,28 +55,32 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    // Nothing answered yet → disabled.
-    expect(_confirmEnabled(tester), isFalse);
-
-    // Q1 (single-select) — pick an environment.
+    // Q1: a Next button (no Confirm yet), disabled until an environment is picked.
+    expect(find.text('Confirm'), findsNothing);
+    expect(_nextEnabled(tester), isFalse);
     await tester.tap(find.text('Production'));
     await tester.pumpAndSettle();
-    expect(_confirmEnabled(tester), isFalse);
+    expect(_nextEnabled(tester), isTrue);
 
-    // Q2 (multi-select) — switch tab, tick a feature.
-    await tester.tap(find.text('2 · Features'));
+    // Advancing lands on Q2 (its features question becomes visible); still no Confirm.
+    await tester.tap(_next);
     await tester.pumpAndSettle();
+    expect(find.text('Which features should I enable?'), findsOneWidget);
+    expect(find.text('Confirm'), findsNothing);
+
+    // Q2: Next gated until a feature is ticked, then advance to Q3.
+    expect(_nextEnabled(tester), isFalse);
     await tester.tap(find.text('Auth'));
     await tester.pumpAndSettle();
+    expect(_nextEnabled(tester), isTrue);
+    await tester.tap(_next);
+    await tester.pumpAndSettle();
+
+    // Q3: now Confirm appears and Next is gone; Confirm gated until the note is filled.
+    expect(find.text('Next →'), findsNothing);
     expect(_confirmEnabled(tester), isFalse);
-
-    // Q3 (free-text) — switch tab, type the answer.
-    await tester.tap(find.text('3 · Note'));
+    await tester.enterText(find.byType(TextField), 'looks good');
     await tester.pumpAndSettle();
-    await tester.enterText(find.byType(TextField).last, 'looks good');
-    await tester.pumpAndSettle();
-
-    // All three answered → enabled.
     expect(_confirmEnabled(tester), isTrue);
   });
 }

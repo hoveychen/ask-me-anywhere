@@ -12,7 +12,7 @@ import 'dart:convert';
 
 import 'package:genui/genui.dart' show basicCatalogId;
 
-import 'a2ui_functions.dart' show allAnsweredFn;
+import 'a2ui_functions.dart' show allAnsweredFn, setDataFn;
 import 'a2ui_sample.dart' show sampleA2uiJson;
 
 /// A named demo card for the "Push test card" gallery. [title] is the inbox
@@ -266,7 +266,7 @@ String _multiQuestion(String surfaceId) => _card(
     {
       'id': 'root',
       'component': 'Column',
-      'children': ['tabs', 'actions'],
+      'children': ['tabs'],
     },
     {
       'id': 'tabs',
@@ -278,11 +278,12 @@ String _multiQuestion(String surfaceId) => _card(
         {'label': '3 · Note', 'content': 'q3'},
       ],
     },
-    // Q1 — single select.
+    // Q1 — single select. Its Next button advances to tab 2, but only once an
+    // environment is picked (gated via allAnswered on /env).
     {
       'id': 'q1',
       'component': 'Column',
-      'children': ['q1text', 'q1pick'],
+      'children': ['q1text', 'q1pick', 'q1nav'],
     },
     {
       'id': 'q1text',
@@ -306,7 +307,7 @@ String _multiQuestion(String surfaceId) => _card(
     {
       'id': 'q2',
       'component': 'Column',
-      'children': ['q2text', 'q2pick'],
+      'children': ['q2text', 'q2pick', 'q2nav'],
     },
     {
       'id': 'q2text',
@@ -330,7 +331,7 @@ String _multiQuestion(String surfaceId) => _card(
     {
       'id': 'q3',
       'component': 'Column',
-      'children': ['q3text', 'q3field'],
+      'children': ['q3text', 'q3field', 'q3nav'],
     },
     {
       'id': 'q3text',
@@ -344,9 +345,99 @@ String _multiQuestion(String surfaceId) => _card(
       'label': 'Other',
       'value': {'path': '/note'},
     },
-    ..._actionRow(requireAnswered: const ['/env', '/features', '/note']),
+    // Per-tab navigation: Next advances the Tabs `activeTab` (/step) a step on,
+    // gated on the current question; the last tab swaps Next for Confirm, gated
+    // on every question. Back steps the tab index down. All pure A2UI.
+    {
+      'id': 'q1nav',
+      'component': 'Row',
+      'children': ['q1next'],
+    },
+    ..._stepButton(id: 'q1next', toStep: 1, label: 'Next →', gateOn: '/env'),
+    {
+      'id': 'q2nav',
+      'component': 'Row',
+      'children': ['q2back', 'q2next'],
+    },
+    ..._stepButton(id: 'q2back', toStep: 0, label: '← Back', primary: false),
+    ..._stepButton(
+      id: 'q2next',
+      toStep: 2,
+      label: 'Next →',
+      gateOn: '/features',
+    ),
+    {
+      'id': 'q3nav',
+      'component': 'Row',
+      'children': ['q3back', 'q3confirm'],
+    },
+    ..._stepButton(id: 'q3back', toStep: 1, label: '← Back', primary: false),
+    {
+      'id': 'q3confirm',
+      'component': 'Button',
+      'variant': 'primary',
+      'child': 'q3confirmText',
+      'action': {
+        'event': {'name': 'confirm'},
+      },
+      'checks': [
+        {
+          'message': 'Answer every question first',
+          'condition': {
+            'call': allAnsweredFn,
+            'args': {
+              'a': {'path': '/env'},
+              'b': {'path': '/features'},
+              'c': {'path': '/note'},
+            },
+          },
+        },
+      ],
+    },
+    {'id': 'q3confirmText', 'component': 'Text', 'text': 'Confirm'},
   ],
 );
+
+/// Build a wizard navigation button + its label text. Sets the Tabs step
+/// (`/step`) to [toStep] via the `setData` client function on tap; when [gateOn]
+/// is given, an `allAnswered` check keeps it disabled until that path has a
+/// value. [primary] picks the filled vs borderless style.
+List<Map<String, Object?>> _stepButton({
+  required String id,
+  required int toStep,
+  required String label,
+  String? gateOn,
+  bool primary = true,
+}) {
+  final String textId = '${id}Text';
+  return [
+    {
+      'id': id,
+      'component': 'Button',
+      'variant': primary ? 'primary' : 'borderless',
+      'child': textId,
+      'action': {
+        'functionCall': {
+          'call': setDataFn,
+          'args': {'path': '/step', 'value': toStep},
+        },
+      },
+      if (gateOn != null)
+        'checks': [
+          {
+            'message': 'Answer this question first',
+            'condition': {
+              'call': allAnsweredFn,
+              'args': {
+                'v': {'path': gateOn},
+              },
+            },
+          },
+        ],
+    },
+    {'id': textId, 'component': 'Text', 'text': label},
+  ];
+}
 
 /// The full gallery the debug FAB cycles through, in display order. The first
 /// entry is the multi-question wizard; the last reuses the original sample
