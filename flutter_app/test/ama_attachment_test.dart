@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:genui/genui.dart' show Surface, basicCatalogId;
 
+import 'package:flutter_app/src/a2ui_gallery.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/ui/ama_attachment.dart';
 import 'package:flutter_app/src/ui/card_detail_view.dart';
@@ -88,5 +89,14 @@ void main() {
     expect(find.byType(Image), findsOneWidget);
     expect(find.text('Remove'), findsOneWidget);
     expect(find.text('Add image'), findsNothing);
+  });
+
+  testWidgets('the gallery Attachment card renders with the picker',
+      (tester) async {
+    final entry = galleryCards.firstWhere((c) => c.title == 'Attachment');
+    await _pump(tester, entry.build('card'));
+    expect(find.byType(Surface), findsOneWidget);
+    expect(find.text('Attach a screenshot'), findsOneWidget);
+    expect(find.text('Add image'), findsOneWidget);
   });
 }
