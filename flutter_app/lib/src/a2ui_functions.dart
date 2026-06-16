@@ -7,6 +7,7 @@ import 'package:genui/genui.dart'
         BasicCatalogItems,
         Catalog,
         ClientFunctionReturnType,
+        DataPath,
         ExecutionContext,
         SynchronousClientFunction;
 import 'package:json_schema_builder/json_schema_builder.dart';
@@ -14,10 +15,13 @@ import 'package:json_schema_builder/json_schema_builder.dart';
 /// Name of the [AllAnsweredFunction] as referenced in A2UI `checks` conditions.
 const String allAnsweredFn = 'allAnswered';
 
+/// Name of the [SetDataFunction] as referenced in A2UI `functionCall` actions.
+const String setDataFn = 'setData';
+
 /// The catalog used to render every card: the basic genui widget set plus
 /// AMA's client functions. Built once and shared by [CardDetailView] and tests.
 final Catalog cardCatalog = BasicCatalogItems.asCatalog().copyWith(
-  newFunctions: const [AllAnsweredFunction()],
+  newFunctions: const [AllAnsweredFunction(), SetDataFunction()],
 );
 
 /// Whether [value] counts as "answered": a non-empty list, a non-blank string,
@@ -58,4 +62,43 @@ class AllAnsweredFunction extends SynchronousClientFunction {
   @override
   Object? executeSync(Map<String, Object?> args, ExecutionContext context) =>
       args.values.every(isAnswered);
+}
+
+/// A2UI client function: writes [args]`['value']` into the data-model path named
+/// by [args]`['path']`, then returns that value. Invoked from a Button's
+/// `functionCall` action — e.g. a "Next" button sets a Tabs `activeTab` binding
+/// to the next index, advancing the wizard a step without any host-side glue.
+/// This is what lets a multi-step wizard live entirely in a pushable A2UI tree.
+class SetDataFunction extends SynchronousClientFunction {
+  const SetDataFunction();
+
+  @override
+  String get name => setDataFn;
+
+  @override
+  String get description =>
+      'Writes a literal value into a data-model path and returns it. Use it in '
+      'a Button functionCall action to drive state — e.g. set a Tabs activeTab '
+      'binding to the next index to advance a multi-step wizard.';
+
+  @override
+  Schema get argumentSchema => S.object(
+        properties: {
+          'path': S.string(description: 'The data-model path to write.'),
+          'value': S.object(description: 'The value to write at that path.'),
+        },
+        required: ['path', 'value'],
+      );
+
+  @override
+  ClientFunctionReturnType get returnType => ClientFunctionReturnType.any;
+
+  @override
+  Object? executeSync(Map<String, Object?> args, ExecutionContext context) {
+    final Object? path = args['path'];
+    if (path is! String) return null;
+    final Object? value = args['value'];
+    context.update(DataPath(path), value);
+    return value;
+  }
 }
