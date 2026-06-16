@@ -89,9 +89,12 @@ class AssistantPickerView extends StatelessWidget {
   }
 }
 
-/// One card, rendered large and centred — the focus surface. The A2UI surface is
-/// reused from CardDetailView; acting or dismissing calls [onResolved].
-class AssistantCardView extends StatelessWidget {
+/// One card, rendered large and centred — the focus surface. When ≥2 cards are
+/// pending it carries a tab strip across the top so the whole queue is
+/// switchable in place (Fleet's Decision Panel model): tap a tab to switch the
+/// active card, resolve one and it advances to the next without bouncing back
+/// to the picker. [onResolved] fires only when the queue empties (→ icon).
+class AssistantCardView extends StatefulWidget {
   const AssistantCardView({
     super.key,
     required this.cardId,
@@ -103,11 +106,18 @@ class AssistantCardView extends StatelessWidget {
   final VoidCallback onResolved;
   final VoidCallback onOpenInbox;
 
-  CardView? _card() {
-    for (final c in _c.cards) {
-      if (c.id == cardId) return c;
-    }
-    return null;
+  @override
+  State<AssistantCardView> createState() => _AssistantCardViewState();
+}
+
+class _AssistantCardViewState extends State<AssistantCardView> {
+  late String _activeId = widget.cardId;
+
+  @override
+  void didUpdateWidget(AssistantCardView old) {
+    super.didUpdateWidget(old);
+    // The shell pushed a different card (e.g. a fresh single-card open): follow it.
+    if (widget.cardId != old.cardId) _activeId = widget.cardId;
   }
 
   @override
@@ -115,29 +125,41 @@ class AssistantCardView extends StatelessWidget {
     return AnimatedBuilder(
       animation: _c,
       builder: (context, _) {
-        final CardView? card = _card();
-        if (card == null) {
-          // Resolved/removed elsewhere — bounce back out.
-          WidgetsBinding.instance.addPostFrameCallback((_) => onResolved());
+        final List<CardView> pending = pendingCards();
+        if (pending.isEmpty) {
+          // Queue drained — collapse to the icon.
+          WidgetsBinding.instance.addPostFrameCallback((_) => widget.onResolved());
           return const SizedBox.shrink();
         }
-        final paths = dataPaths(parseA2uiMessages(card.a2UiJson));
+        // Keep the active id valid: if the active card was just resolved, fall
+        // through to the next still-pending card instead of leaving the surface.
+        final CardView active = pending.firstWhere(
+          (c) => c.id == _activeId,
+          orElse: () => pending.first,
+        );
+        if (active.id != _activeId) _activeId = active.id;
+
+        final paths = dataPaths(parseA2uiMessages(active.a2UiJson));
         return Scaffold(
           appBar: AppBar(
-            title: Text(card.summary),
+            title: Text(active.summary),
+            bottom: pending.length >= 2
+                ? QueueTabs(
+                    pending: pending,
+                    activeId: _activeId,
+                    onSelect: (id) => setState(() => _activeId = id),
+                  )
+                : null,
             actions: [
               IconButton(
                 icon: const Icon(Icons.all_inbox),
                 tooltip: 'Open full inbox',
-                onPressed: onOpenInbox,
+                onPressed: widget.onOpenInbox,
               ),
               IconButton(
                 icon: const Icon(Icons.close),
                 tooltip: 'Dismiss',
-                onPressed: () async {
-                  await _c.dismiss(card.id);
-                  onResolved();
-                },
+                onPressed: () => _c.dismiss(active.id),
               ),
             ],
           ),
@@ -147,19 +169,81 @@ class AssistantCardView extends StatelessWidget {
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(24),
                 child: CardDetailView(
-                  card: card,
-                  onAction: (action) async {
-                    await _c.recordAction(card.id, action.name, action.context);
-                    onResolved();
-                  },
-                  onDataChanged: (path, value) => _c.setData(card.id, path, value),
-                  remoteData: _c.watchCardData(card.id, paths),
+                  // Key by id so switching tabs rebuilds the surface cleanly.
+                  key: ValueKey(active.id),
+                  card: active,
+                  onAction: (action) =>
+                      _c.recordAction(active.id, action.name, action.context),
+                  onDataChanged: (path, value) =>
+                      _c.setData(active.id, path, value),
+                  remoteData: _c.watchCardData(active.id, paths),
                 ),
               ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// The pending-queue tab strip shown above a card when ≥2 are waiting: a
+/// horizontally scrollable row of chips — the active card highlighted, a
+/// pending count on the left — that switches the active card in place.
+class QueueTabs extends StatelessWidget implements PreferredSizeWidget {
+  const QueueTabs({
+    required this.pending,
+    required this.activeId,
+    required this.onSelect,
+  });
+
+  final List<CardView> pending;
+  final String activeId;
+  final ValueChanged<String> onSelect;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(48);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 48,
+      child: Row(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(
+              '${pending.length} pending',
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+          ),
+          Expanded(
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(right: 12),
+              itemCount: pending.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (_, i) {
+                final card = pending[i];
+                final bool selected = card.id == activeId;
+                return Center(
+                  child: ChoiceChip(
+                    label: Text(
+                      card.summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    selected: selected,
+                    onSelected: (_) => onSelect(card.id),
+                    selectedColor: scheme.primaryContainer,
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
