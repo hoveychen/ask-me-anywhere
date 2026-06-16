@@ -12,7 +12,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:flutter_app/src/a2ui_sample.dart';
+import 'package:flutter_app/src/a2ui_gallery.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/notify/card_notifier.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
@@ -132,13 +132,9 @@ class AssistantController extends ChangeNotifier {
   /// shells use it to react (macOS pops the floating window to the front).
   void Function(CardView card)? onNewCard;
 
-  // Cycle a few representative summaries for the debug push.
-  static const _samples = [
-    'Deploy production?',
-    'Approve PR #42',
-    'Lunch time',
-    'Run the migration?',
-  ];
+  // The debug push cycles through a gallery of card types (single/multi
+  // select, form, note) so the FAB exercises every renderer. See a2ui_gallery.
+  final List<GalleryCard> _gallery = galleryCards;
 
   List<CardView> get cards => _cards;
   Object? get error => _error;
@@ -207,14 +203,15 @@ class AssistantController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Push a representative sample card (debug affordance).
+  /// Push the next card from the gallery (debug affordance). Cycles through the
+  /// card types so each tap shows a different renderer.
   Future<void> pushDebugCard() async {
     final inbox = _inbox;
     if (inbox == null) return;
-    final summary = _samples[_cards.length % _samples.length];
+    final entry = _gallery[_cards.length % _gallery.length];
     await inbox.push(
-      summary: summary,
-      a2UiJson: sampleA2uiJson(surfaceId: 'card', title: summary),
+      summary: entry.title,
+      a2UiJson: entry.build('card'),
     );
     await _refresh();
   }
