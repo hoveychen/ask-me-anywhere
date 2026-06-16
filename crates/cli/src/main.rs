@@ -16,14 +16,14 @@
 //! ticket, pushes a card described by a JSON file (or stdin), holds the node
 //! alive briefly so gossip can flush, and exits.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use ama_core::{
-    build_endpoint, now_ms, parse_key, Inbox, KeyKind, LiveEvent, MessageCard, MessageState,
-    RelayChoice, Status,
+    build_endpoint, load_or_create_secret_key, now_ms, parse_key, Endpoint, Inbox, KeyKind,
+    LiveEvent, MessageCard, MessageState, RelayChoice, Status,
 };
 use axum::{
     extract::{Query, State},
@@ -51,7 +51,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a fresh inbox and print a pairing ticket for other devices.
+    /// Create a fresh inbox and print a pairing ticket for other devices. With
+    /// `--data-dir`, the inbox and node identity persist there: rerunning
+    /// `create` with the same dir reopens the existing inbox (same ticket)
+    /// instead of starting over.
     Create {
         /// Human-readable device label (stamped into state writes).
         #[arg(long, default_value = "device")]
@@ -60,6 +63,10 @@ enum Command {
         /// n0's public relays when omitted.
         #[arg(long)]
         relay: Option<String>,
+        /// Persist the inbox store + node identity here. Omit for an ephemeral
+        /// in-memory node (the previous default).
+        #[arg(long = "data-dir")]
+        data_dir: Option<PathBuf>,
     },
     /// Join an existing inbox using a ticket from `create`.
     Join {
@@ -70,6 +77,10 @@ enum Command {
         /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
         #[arg(long)]
         relay: Option<String>,
+        /// Persist the joined inbox + node identity here so the join survives a
+        /// restart. Omit for an ephemeral in-memory node.
+        #[arg(long = "data-dir")]
+        data_dir: Option<PathBuf>,
     },
     /// One-shot: join an inbox, push a card described in a JSON file (or stdin),
     /// hold the node alive briefly so gossip can deliver, then exit.
@@ -92,6 +103,10 @@ enum Command {
         /// exits sooner once it sees a `SyncFinished` event.
         #[arg(long, default_value_t = 5)]
         wait_secs: u64,
+        /// Persist this sender's node identity here so it keeps a stable
+        /// node-id across runs. Omit for an ephemeral identity.
+        #[arg(long = "data-dir")]
+        data_dir: Option<PathBuf>,
     },
     /// Long-running webhook bridge: join an inbox once, listen on HTTP, and
     /// forward `POST /push` bodies (same JSON shape as `send --card-file`) as
@@ -119,6 +134,10 @@ enum Command {
         /// whitespace is trimmed.
         #[arg(long, env = "AMA_TOKEN_FILE")]
         token_file: Option<String>,
+        /// Persist the joined inbox + node identity here so a restart of the
+        /// bridge keeps the same node-id. Omit for an ephemeral node.
+        #[arg(long = "data-dir", env = "AMA_DATA_DIR")]
+        data_dir: Option<PathBuf>,
     },
 }
 
@@ -148,6 +167,33 @@ impl CardInput {
     }
 }
 
+/// Build a node endpoint for a CLI command. With `data_dir` the node adopts a
+/// persistent identity (key under `<data_dir>/node-key`) so its node-id and
+/// ticket survive restarts; without it the identity is ephemeral.
+async fn cli_endpoint(relay: RelayChoice, data_dir: Option<&Path>) -> Result<Endpoint> {
+    match data_dir {
+        Some(dir) => {
+            let key = load_or_create_secret_key(&dir.join("node-key"))?;
+            build_endpoint(relay, Some(key)).await
+        }
+        None => build_endpoint(relay, None).await,
+    }
+}
+
+/// `ama create`: open the inbox already persisted at `data_dir`, else create a
+/// new one (recording its namespace so a later run reopens it). Without
+/// `data_dir` it's always a fresh ephemeral inbox. Binds exactly one endpoint —
+/// the persisted-or-not decision is made before binding via [`Inbox::is_persisted`].
+async fn create_inbox(name: &str, relay: RelayChoice, data_dir: Option<&Path>) -> Result<Inbox> {
+    let endpoint = cli_endpoint(relay, data_dir).await?;
+    match data_dir {
+        Some(dir) if Inbox::is_persisted(dir)? => Inbox::open(endpoint, name, dir)
+            .await?
+            .context("inbox namespace recorded at data dir but its replica is missing"),
+        other => Inbox::create(endpoint, name, other).await,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install a tracing subscriber so RUST_LOG=iroh_docs=debug,ama=trace etc.
@@ -164,9 +210,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let inbox = match cli.cmd {
-        Command::Create { name, relay } => {
-            let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
-            let inbox = Inbox::create(endpoint, name).await?;
+        Command::Create { name, relay, data_dir } => {
+            let relay = RelayChoice::from_url_opt(relay.as_deref())?;
+            let inbox = create_inbox(&name, relay, data_dir.as_deref()).await?;
             // The ticket's reachability is carried by the relay URL; minting
             // it before the relay is assigned produces an unreachable ticket,
             // and external dials (ama send / ama serve / a paired device just
@@ -177,18 +223,20 @@ async fn main() -> Result<()> {
             print_ticket(&ticket.to_string());
             Arc::new(inbox)
         }
-        Command::Join { ticket, name, relay } => {
+        Command::Join { ticket, name, relay, data_dir } => {
             let ticket = ticket.parse().context("parse ticket")?;
-            let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
-            let inbox = Inbox::join(endpoint, ticket, name).await?;
+            let endpoint =
+                cli_endpoint(RelayChoice::from_url_opt(relay.as_deref())?, data_dir.as_deref())
+                    .await?;
+            let inbox = Inbox::join(endpoint, ticket, name, data_dir.as_deref()).await?;
             println!("joined inbox {}", inbox.doc_id());
             Arc::new(inbox)
         }
-        Command::Send { ticket, card_file, name, relay, wait_secs } => {
-            return run_send(ticket, card_file, name, relay, wait_secs).await;
+        Command::Send { ticket, card_file, name, relay, wait_secs, data_dir } => {
+            return run_send(ticket, card_file, name, relay, wait_secs, data_dir).await;
         }
-        Command::Serve { ticket, bind, name, relay, token, token_file } => {
-            return run_serve(ticket, bind, name, relay, token, token_file).await;
+        Command::Serve { ticket, bind, name, relay, token, token_file, data_dir } => {
+            return run_serve(ticket, bind, name, relay, token, token_file, data_dir).await;
         }
     };
 
@@ -209,14 +257,16 @@ async fn run_send(
     name: String,
     relay: Option<String>,
     wait_secs: u64,
+    data_dir: Option<PathBuf>,
 ) -> Result<()> {
     let raw = read_card_input(&card_file).await?;
     let input: CardInput = serde_json::from_slice(&raw).context("parse card JSON")?;
     let card = input.into_card(&name);
 
     let ticket = ticket.parse().context("parse ticket")?;
-    let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
-    let inbox = Inbox::join(endpoint, ticket, name).await?;
+    let endpoint =
+        cli_endpoint(RelayChoice::from_url_opt(relay.as_deref())?, data_dir.as_deref()).await?;
+    let inbox = Inbox::join(endpoint, ticket, name, data_dir.as_deref()).await?;
     let events = inbox.subscribe().await?;
 
     inbox.push(&card).await.context("push card")?;
@@ -258,6 +308,7 @@ async fn run_serve(
     relay: Option<String>,
     token: Option<String>,
     token_file: Option<String>,
+    data_dir: Option<PathBuf>,
 ) -> Result<()> {
     let token = resolve_token(token, token_file).await?;
     if token.is_none() {
@@ -268,8 +319,9 @@ async fn run_serve(
     }
 
     let ticket = ticket.parse().context("parse ticket")?;
-    let endpoint = build_endpoint(RelayChoice::from_url_opt(relay.as_deref())?).await?;
-    let inbox = Arc::new(Inbox::join(endpoint, ticket, name.clone()).await?);
+    let endpoint =
+        cli_endpoint(RelayChoice::from_url_opt(relay.as_deref())?, data_dir.as_deref()).await?;
+    let inbox = Arc::new(Inbox::join(endpoint, ticket, name.clone(), data_dir.as_deref()).await?);
     eprintln!("joined inbox {}", inbox.doc_id());
 
     let state = ServerState {
@@ -1156,6 +1208,47 @@ mod tests {
         assert_eq!(card.source, "webhook");
     }
 
+    /// `ama create --data-dir X` is restart-friendly: the second run reopens the
+    /// same inbox (same namespace) and still sees a card pushed in the first run,
+    /// instead of minting a fresh empty inbox. Offline (relay disabled), so it
+    /// needs no network. This is the CLI-level proof of the persist-store plan.
+    #[tokio::test]
+    async fn create_with_data_dir_reopens_same_inbox_across_restart() {
+        let dir = std::env::temp_dir()
+            .join(format!("ama-cli-persist-{}-{}", std::process::id(), now_ms()));
+
+        // First run: create the persistent inbox and push a card.
+        let first = create_inbox("device", RelayChoice::Disabled, Some(&dir))
+            .await
+            .expect("first create");
+        let namespace = first.doc_id();
+        let card = MessageCard {
+            id: "cli-card-1".into(),
+            a2ui: serde_json::json!({}),
+            summary: "from first run".into(),
+            source: "test".into(),
+            created_at: now_ms(),
+        };
+        first.push(&card).await.expect("push");
+        first.shutdown().await.expect("shutdown first");
+
+        // Second run on the same dir: must reopen the same inbox, not create anew.
+        let second = create_inbox("device", RelayChoice::Disabled, Some(&dir))
+            .await
+            .expect("second create");
+        assert_eq!(
+            second.doc_id(),
+            namespace,
+            "rerunning create on the same data dir must reopen the same inbox"
+        );
+        assert!(
+            second.get_message("cli-card-1").await.unwrap().is_some(),
+            "card pushed in the first run must survive into the second"
+        );
+        second.shutdown().await.expect("shutdown second");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn card_input_rejects_missing_summary() {
         let err = serde_json::from_str::<CardInput>(r#"{"a2ui": {}}"#).unwrap_err();
@@ -1309,7 +1402,7 @@ mod tests {
             .bind()
             .await
             .expect("bind endpoint");
-        let inbox = Arc::new(Inbox::create(ep, "test").await.expect("create inbox"));
+        let inbox = Arc::new(Inbox::create(ep, "test", None).await.expect("create inbox"));
         let state = ServerState {
             inbox: inbox.clone(),
             default_source: Arc::new("test".into()),
@@ -1722,7 +1815,7 @@ mod tests {
             .bind()
             .await
             .unwrap();
-        let inbox = Arc::new(Inbox::create(ep, "test").await.unwrap());
+        let inbox = Arc::new(Inbox::create(ep, "test", None).await.unwrap());
         let state = ServerState {
             inbox: inbox.clone(),
             default_source: Arc::new("test".into()),

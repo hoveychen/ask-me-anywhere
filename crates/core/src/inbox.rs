@@ -94,6 +94,14 @@ impl Inbox {
         Ok(Some(Self { router, blobs, doc, author, device: device.into() }))
     }
 
+    /// Whether a persisted inbox already lives under `data_dir` (i.e. a prior
+    /// `create`/`join` recorded its namespace there). Lets a caller decide
+    /// between [`Inbox::open`] and [`Inbox::create`] *before* binding an
+    /// endpoint, so the choice costs no extra node.
+    pub fn is_persisted(data_dir: &Path) -> Result<bool> {
+        Ok(load_namespace(data_dir)?.is_some())
+    }
+
     /// Spawn a node on `endpoint` and join an existing inbox via a [`DocTicket`]
     /// (the payload of the pairing QR code). Joins automatically start syncing
     /// with the ticket's peers. `data_dir` behaves as in [`Inbox::create`]:
