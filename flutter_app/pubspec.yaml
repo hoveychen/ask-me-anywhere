@@ -42,6 +42,9 @@ dependencies:
       url: https://github.com/flutter/genui
       ref: a8293b9c8d68fd36be9750ec1ecb4c1fc2412d2d
       path: packages/genui
+  # Schema type for A2UI client functions (see src/a2ui_functions.dart); also a
+  # transitive dep of genui, pinned here so the direct import is declared.
+  json_schema_builder: ^0.1.3
   qr_flutter: ^4.1.0
   flutter_local_notifications: ^21.0.0
   mobile_scanner: ^7.2.0

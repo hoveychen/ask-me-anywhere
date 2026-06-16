@@ -12,6 +12,7 @@ import 'dart:convert';
 
 import 'package:genui/genui.dart' show basicCatalogId;
 
+import 'a2ui_functions.dart' show allAnsweredFn;
 import 'a2ui_sample.dart' show sampleA2uiJson;
 
 /// A named demo card for the "Push test card" gallery. [title] is the inbox
@@ -25,7 +26,11 @@ class GalleryCard {
 
 /// Wrap a `confirm` / `dismiss` action row mirroring the sample card's buttons
 /// (primary + borderless), so the gallery feels like a real decision card.
-List<Map<String, Object?>> _actionRow() => [
+///
+/// When [requireAnswered] lists data paths, the Confirm button gains a `checks`
+/// condition (`allAnswered` over those paths) so it stays disabled until every
+/// one is answered — the A2UI-native "Submit disabled until answered" gate.
+List<Map<String, Object?>> _actionRow({List<String> requireAnswered = const []}) => [
   {
     'id': 'actions',
     'component': 'Row',
@@ -39,6 +44,19 @@ List<Map<String, Object?>> _actionRow() => [
     'action': {
       'event': {'name': 'confirm'},
     },
+    if (requireAnswered.isNotEmpty)
+      'checks': [
+        {
+          'message': 'Answer every question first',
+          'condition': {
+            'call': allAnsweredFn,
+            'args': {
+              for (var i = 0; i < requireAnswered.length; i++)
+                'v$i': {'path': requireAnswered[i]},
+            },
+          },
+        },
+      ],
   },
   {'id': 'confirmText', 'component': 'Text', 'text': 'Confirm'},
   {
@@ -111,7 +129,7 @@ String _singleChoice(String surfaceId) => _card(
         {'label': 'Local dev', 'value': 'local'},
       ],
     },
-    ..._actionRow(),
+    ..._actionRow(requireAnswered: const ['/choice']),
   ],
 );
 
@@ -144,7 +162,7 @@ String _multiChoice(String surfaceId) => _card(
         {'label': 'Notifications', 'value': 'notifications'},
       ],
     },
-    ..._actionRow(),
+    ..._actionRow(requireAnswered: const ['/features']),
   ],
 );
 
@@ -179,7 +197,7 @@ String _multiChips(String surfaceId) => _card(
         {'label': 'wontfix', 'value': 'wontfix'},
       ],
     },
-    ..._actionRow(),
+    ..._actionRow(requireAnswered: const ['/tags']),
   ],
 );
 
@@ -225,7 +243,7 @@ String _form(String surfaceId) => _card(
       'value': {'path': '/due'},
       'enableTime': false,
     },
-    ..._actionRow(),
+    ..._actionRow(requireAnswered: const ['/title']),
   ],
 );
 
@@ -326,7 +344,7 @@ String _multiQuestion(String surfaceId) => _card(
       'label': 'Other',
       'value': {'path': '/note'},
     },
-    ..._actionRow(),
+    ..._actionRow(requireAnswered: const ['/env', '/features', '/note']),
   ],
 );
 
