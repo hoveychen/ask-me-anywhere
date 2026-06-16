@@ -136,4 +136,30 @@ void main() {
       expect(changes.where((c) => c == '/other=').isNotEmpty, isTrue);
     });
   });
+
+  testWidgets('shows the selected option preview, only once chosen',
+      (tester) async {
+    final options = [
+      {
+        'label': 'Alpha',
+        'value': 'a',
+        'description': 'first',
+        'preview': 'Alpha preview body',
+      },
+      {'label': 'Beta', 'value': 'b'},
+    ];
+    await _pump(tester, _tree(options: options));
+
+    // Nothing selected → no preview yet.
+    expect(find.text('Alpha preview body'), findsNothing);
+
+    await tester.tap(find.text('Alpha'));
+    await tester.pumpAndSettle();
+    expect(find.text('Alpha preview body'), findsOneWidget);
+
+    // Switching to an option without a preview hides it.
+    await tester.tap(find.text('Beta'));
+    await tester.pumpAndSettle();
+    expect(find.text('Alpha preview body'), findsNothing);
+  });
 }

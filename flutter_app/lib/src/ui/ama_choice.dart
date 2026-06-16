@@ -176,9 +176,38 @@ class _AmaChoiceState extends State<_AmaChoice> {
                   onChanged: _typeOther,
                 ),
               ),
+            ?_previewFor(context, selected),
           ],
         );
       },
+    );
+  }
+
+  /// The preview panel for the currently-selected option — shown only in
+  /// single-select when exactly one option is chosen and it carries a preview,
+  /// mirroring AskUserQuestion's side-by-side preview (stacked here to fit the
+  /// card width). Returns null when there's nothing to preview.
+  Widget? _previewFor(BuildContext context, List<String> selected) {
+    if (_multiple || selected.length != 1) return null;
+    final JsonMap opt = _options.firstWhere(
+      (o) => o['value'] == selected.first,
+      orElse: () => const {},
+    );
+    final Object? preview = opt['preview'];
+    if (preview is! String || preview.isEmpty) return null;
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: scheme.outlineVariant),
+        ),
+        child: Text(preview, style: Theme.of(context).textTheme.bodyMedium),
+      ),
     );
   }
 }
