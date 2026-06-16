@@ -57,6 +57,10 @@ dependencies:
   # Android chat-head bubble (SYSTEM_ALERT_WINDOW overlay) + its permission gate.
   flutter_overlay_window: ^0.4.5
   permission_handler: ^11.3.1
+  # App-support dir for the persistent inbox store (iroh blobs + docs replica +
+  # node identity key). Was transitive via the plugins above; declared direct
+  # now that the inbox boot path reads it.
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
