@@ -51,7 +51,13 @@ void main() {
       (tester) async {
     final entry = galleryCards.firstWhere((c) => c.title == 'Multi-question');
     await tester.pumpWidget(MaterialApp(
-      home: Scaffold(body: CardDetailView(card: _card(entry.build('card')))),
+      home: Scaffold(
+        // The macOS card surface scrolls (AssistantCardView); mirror that so a
+        // tall question doesn't overflow the test viewport.
+        body: SingleChildScrollView(
+          child: CardDetailView(card: _card(entry.build('card'))),
+        ),
+      ),
     ));
     await tester.pumpAndSettle();
 
