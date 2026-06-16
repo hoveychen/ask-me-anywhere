@@ -12,16 +12,27 @@ import 'package:genui/genui.dart'
         SynchronousClientFunction;
 import 'package:json_schema_builder/json_schema_builder.dart';
 
+import 'package:flutter_app/src/ui/ama_choice.dart';
+
 /// Name of the [AllAnsweredFunction] as referenced in A2UI `checks` conditions.
 const String allAnsweredFn = 'allAnswered';
+
+/// Name of the [AnyAnsweredFunction] as referenced in A2UI `checks` conditions.
+const String anyAnsweredFn = 'anyAnswered';
 
 /// Name of the [SetDataFunction] as referenced in A2UI `functionCall` actions.
 const String setDataFn = 'setData';
 
-/// The catalog used to render every card: the basic genui widget set plus
-/// AMA's client functions. Built once and shared by [CardDetailView] and tests.
+/// The catalog used to render every card: the basic genui widget set, AMA's
+/// custom components (e.g. [amaChoice]), plus AMA's client functions. Built
+/// once and shared by [CardDetailView] and tests.
 final Catalog cardCatalog = BasicCatalogItems.asCatalog().copyWith(
-  newFunctions: const [AllAnsweredFunction(), SetDataFunction()],
+  newItems: [amaChoice],
+  newFunctions: const [
+    AllAnsweredFunction(),
+    AnyAnsweredFunction(),
+    SetDataFunction(),
+  ],
 );
 
 /// Whether [value] counts as "answered": a non-empty list, a non-blank string,
@@ -29,6 +40,7 @@ final Catalog cardCatalog = BasicCatalogItems.asCatalog().copyWith(
 /// / null means the question is still open. Exposed for unit testing.
 bool isAnswered(Object? value) {
   if (value == null) return false;
+  if (value is bool) return value; // lets allAnswered compose over anyAnswered
   if (value is String) return value.trim().isNotEmpty;
   if (value is Iterable) return value.isNotEmpty;
   if (value is Map) return value.isNotEmpty;
@@ -62,6 +74,34 @@ class AllAnsweredFunction extends SynchronousClientFunction {
   @override
   Object? executeSync(Map<String, Object?> args, ExecutionContext context) =>
       args.values.every(isAnswered);
+}
+
+/// A2UI client function: returns true when *any* argument is answered. Use it to
+/// gate on "an option was picked OR the Other free-text was filled", and nest it
+/// inside [AllAnsweredFunction] to require every such question to be answered.
+class AnyAnsweredFunction extends SynchronousClientFunction {
+  const AnyAnsweredFunction();
+
+  @override
+  String get name => anyAnsweredFn;
+
+  @override
+  String get description =>
+      'Returns true when at least one argument is answered (a non-empty list, '
+      'a non-blank string, or a non-null value). Use it to gate on "an option '
+      'was picked OR the Other free-text was filled".';
+
+  @override
+  Schema get argumentSchema => S.object(
+        description: 'Any number of values; the result is true if any is answered.',
+      );
+
+  @override
+  ClientFunctionReturnType get returnType => ClientFunctionReturnType.boolean;
+
+  @override
+  Object? executeSync(Map<String, Object?> args, ExecutionContext context) =>
+      args.values.any(isAnswered);
 }
 
 /// A2UI client function: writes [args]`['value']` into the data-model path named

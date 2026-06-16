@@ -12,7 +12,7 @@ import 'dart:convert';
 
 import 'package:genui/genui.dart' show basicCatalogId;
 
-import 'a2ui_functions.dart' show allAnsweredFn, setDataFn;
+import 'a2ui_functions.dart' show allAnsweredFn, anyAnsweredFn, setDataFn;
 import 'a2ui_sample.dart' show sampleA2uiJson;
 
 /// A named demo card for the "Push test card" gallery. [title] is the inbox
@@ -259,6 +259,7 @@ String _multiQuestion(String surfaceId) => _card(
   seeds: const {
     '/step': 0,
     '/env': <String>[],
+    '/envOther': '',
     '/features': <String>[],
     '/note': '',
   },
@@ -278,12 +279,12 @@ String _multiQuestion(String surfaceId) => _card(
         {'label': '3 · Note', 'content': 'q3'},
       ],
     },
-    // Q1 — single select. Its Next button advances to tab 2, but only once an
-    // environment is picked (gated via allAnswered on /env).
+    // Q1 — single select via AmaChoice: each option has a description + preview,
+    // plus a mutually-exclusive Other. Next is gated on (an option OR Other).
     {
       'id': 'q1',
       'component': 'Column',
-      'children': ['q1text', 'q1pick', 'q1nav'],
+      'children': ['q1text', 'q1body', 'q1pick', 'q1nav'],
     },
     {
       'id': 'q1text',
@@ -292,22 +293,43 @@ String _multiQuestion(String surfaceId) => _card(
       'variant': 'h4',
     },
     {
+      'id': 'q1body',
+      'component': 'Text',
+      'text': 'Pick the target environment. This decides which secrets and '
+          'database the release talks to — production is irreversible.',
+    },
+    {
       'id': 'q1pick',
-      'component': 'ChoicePicker',
-      'variant': 'mutuallyExclusive',
+      'component': 'AmaChoice',
       'label': 'Target',
       'value': {'path': '/env'},
+      'other': {'path': '/envOther'},
       'options': const [
-        {'label': 'Production', 'value': 'prod'},
-        {'label': 'Staging', 'value': 'staging'},
-        {'label': 'Local dev', 'value': 'local'},
+        {
+          'label': 'Production',
+          'value': 'prod',
+          'description': 'Live customer traffic',
+          'preview':
+              'Deploys to prod.muvee.ai — real users, real data. No undo.',
+        },
+        {
+          'label': 'Staging',
+          'value': 'staging',
+          'description': 'Pre-prod mirror',
+          'preview': 'Deploys to staging — safe to break, resets nightly.',
+        },
+        {
+          'label': 'Local dev',
+          'value': 'local',
+          'description': 'Your machine only',
+        },
       ],
     },
-    // Q2 — multi select.
+    // Q2 — multi select via AmaChoice with per-option descriptions.
     {
       'id': 'q2',
       'component': 'Column',
-      'children': ['q2text', 'q2pick', 'q2nav'],
+      'children': ['q2text', 'q2body', 'q2pick', 'q2nav'],
     },
     {
       'id': 'q2text',
@@ -316,22 +338,35 @@ String _multiQuestion(String surfaceId) => _card(
       'variant': 'h4',
     },
     {
+      'id': 'q2body',
+      'component': 'Text',
+      'text': 'Choose any number — each adds a module to the build.',
+    },
+    {
       'id': 'q2pick',
-      'component': 'ChoicePicker',
-      'variant': 'multipleSelection',
+      'component': 'AmaChoice',
       'label': 'Features',
+      'multiple': true,
       'value': {'path': '/features'},
       'options': const [
-        {'label': 'Auth', 'value': 'auth'},
-        {'label': 'Billing', 'value': 'billing'},
-        {'label': 'Analytics', 'value': 'analytics'},
+        {'label': 'Auth', 'value': 'auth', 'description': 'Login + sessions'},
+        {
+          'label': 'Billing',
+          'value': 'billing',
+          'description': 'Stripe checkout',
+        },
+        {
+          'label': 'Analytics',
+          'value': 'analytics',
+          'description': 'Usage tracking',
+        },
       ],
     },
-    // Q3 — free text ("Other").
+    // Q3 — free text, with a descriptive body.
     {
       'id': 'q3',
       'component': 'Column',
-      'children': ['q3text', 'q3field', 'q3nav'],
+      'children': ['q3text', 'q3body', 'q3field', 'q3nav'],
     },
     {
       'id': 'q3text',
@@ -340,9 +375,14 @@ String _multiQuestion(String surfaceId) => _card(
       'variant': 'h4',
     },
     {
+      'id': 'q3body',
+      'component': 'Text',
+      'text': 'Free-form notes that travel with the request.',
+    },
+    {
       'id': 'q3field',
       'component': 'TextField',
-      'label': 'Other',
+      'label': 'Notes',
       'value': {'path': '/note'},
     },
     // Per-tab navigation: Next advances the Tabs `activeTab` (/step) a step on,
@@ -353,7 +393,13 @@ String _multiQuestion(String surfaceId) => _card(
       'component': 'Row',
       'children': ['q1next'],
     },
-    ..._stepButton(id: 'q1next', toStep: 1, label: 'Next →', gateOn: '/env'),
+    // Q1 is answered by either an option OR the Other text.
+    ..._stepButton(
+      id: 'q1next',
+      toStep: 1,
+      label: 'Next →',
+      gateCondition: _anyAnswered(const ['/env', '/envOther']),
+    ),
     {
       'id': 'q2nav',
       'component': 'Row',
@@ -364,7 +410,7 @@ String _multiQuestion(String surfaceId) => _card(
       id: 'q2next',
       toStep: 2,
       label: 'Next →',
-      gateOn: '/features',
+      gateCondition: _anyAnswered(const ['/features']),
     ),
     {
       'id': 'q3nav',
@@ -380,15 +426,16 @@ String _multiQuestion(String surfaceId) => _card(
       'action': {
         'event': {'name': 'confirm'},
       },
+      // Every question answered: Q1 (option OR Other), Q2, and Q3.
       'checks': [
         {
           'message': 'Answer every question first',
           'condition': {
             'call': allAnsweredFn,
             'args': {
-              'a': {'path': '/env'},
-              'b': {'path': '/features'},
-              'c': {'path': '/note'},
+              'q1': _anyAnswered(const ['/env', '/envOther']),
+              'q2': {'path': '/features'},
+              'q3': {'path': '/note'},
             },
           },
         },
@@ -398,18 +445,36 @@ String _multiQuestion(String surfaceId) => _card(
   ],
 );
 
+/// An `anyAnswered` condition over [paths] — true when any one has a value.
+Map<String, Object?> _anyAnswered(List<String> paths) => {
+  'call': anyAnsweredFn,
+  'args': {
+    for (var i = 0; i < paths.length; i++) 'v$i': {'path': paths[i]},
+  },
+};
+
 /// Build a wizard navigation button + its label text. Sets the Tabs step
-/// (`/step`) to [toStep] via the `setData` client function on tap; when [gateOn]
-/// is given, an `allAnswered` check keeps it disabled until that path has a
-/// value. [primary] picks the filled vs borderless style.
+/// (`/step`) to [toStep] via the `setData` client function on tap. Gate it by
+/// passing either [gateOn] (a single path, wrapped in `allAnswered`) or a full
+/// [gateCondition] expression; [primary] picks the filled vs borderless style.
 List<Map<String, Object?>> _stepButton({
   required String id,
   required int toStep,
   required String label,
   String? gateOn,
+  Map<String, Object?>? gateCondition,
   bool primary = true,
 }) {
   final String textId = '${id}Text';
+  final Map<String, Object?>? condition = gateCondition ??
+      (gateOn == null
+          ? null
+          : {
+              'call': allAnsweredFn,
+              'args': {
+                'v': {'path': gateOn},
+              },
+            });
   return [
     {
       'id': id,
@@ -422,17 +487,9 @@ List<Map<String, Object?>> _stepButton({
           'args': {'path': '/step', 'value': toStep},
         },
       },
-      if (gateOn != null)
+      if (condition != null)
         'checks': [
-          {
-            'message': 'Answer this question first',
-            'condition': {
-              'call': allAnsweredFn,
-              'args': {
-                'v': {'path': gateOn},
-              },
-            },
-          },
+          {'message': 'Answer this question first', 'condition': condition},
         ],
     },
     {'id': textId, 'component': 'Text', 'text': label},
