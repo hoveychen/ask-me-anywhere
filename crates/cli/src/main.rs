@@ -1853,3 +1853,116 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
+
+/// Deterministic end-to-end proof of the real message-source chain: a GitHub PR
+/// webhook POSTed at one node's `ama serve` HTTP surface becomes a card that
+/// gossips to a *second*, paired node. Uses an in-process local relay (no n0 /
+/// internet), so unlike the live `scripts/connect-source-demo.sh` run it isn't
+/// subject to public-discovery timing flakiness.
+#[cfg(test)]
+mod real_source_e2e {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use iroh::{
+        endpoint::presets, tls::CaRootsConfig, Endpoint, RelayMap, RelayMode,
+    };
+    use std::time::Duration;
+    use tower::util::ServiceExt;
+
+    /// An endpoint on the given in-process relay only (no n0 discovery), trusting
+    /// the test relay's self-signed cert.
+    async fn relay_endpoint(relay_map: RelayMap) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(relay_map))
+            .ca_roots_config(CaRootsConfig::insecure_skip_verify())
+            .bind()
+            .await
+            .expect("bind relay endpoint")
+    }
+
+    /// Wait until the node has a relay URL (its ticket's reachability), bounded.
+    async fn wait_relay(inbox: &Inbox) {
+        for _ in 0..600 {
+            if inbox.endpoint().addr().relay_urls().next().is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("node never obtained a relay url");
+    }
+
+    /// Poll the owner for the card by id until it (and its content blob) arrive.
+    async fn await_message(inbox: &Inbox, id: &str) -> MessageCard {
+        for _ in 0..300 {
+            if let Ok(Some(card)) = inbox.get_message(id).await {
+                return card;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("card {id} never synced to the owner node");
+    }
+
+    #[tokio::test]
+    async fn github_pr_webhook_becomes_a_card_that_syncs_to_the_owner() {
+        // In-process relay; both nodes use only it.
+        let (relay_map, _url, _server) = iroh::test_utils::run_relay_server()
+            .await
+            .expect("spawn local relay");
+
+        // Owner node A — the "app's inbox".
+        let owner = Inbox::create(relay_endpoint(relay_map.clone()).await, "owner", None)
+            .await
+            .expect("create owner");
+        wait_relay(&owner).await;
+        let ticket = owner.ticket_string().await.expect("ticket");
+
+        // Bridge node B — what `ama serve` runs: joins the owner's inbox.
+        let bridge = Arc::new(
+            Inbox::join_ticket(relay_endpoint(relay_map.clone()).await, &ticket, "webhook", None)
+                .await
+                .expect("join bridge"),
+        );
+        wait_relay(&bridge).await;
+
+        // Drive the GitHub PR adapter through the real HTTP router on the bridge.
+        let router = build_router(ServerState {
+            inbox: bridge.clone(),
+            default_source: Arc::new("webhook".into()),
+            token: None,
+        });
+        let payload = include_str!("../../../scripts/sample-github-pr.json");
+        let resp = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/github/pr")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .expect("router oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["ignored"], serde_json::json!(false), "PR should be actionable");
+        let id = body["id"].as_str().expect("card id in response").to_string();
+
+        // The real proof: the card the adapter built on the bridge gossips to the
+        // owner node, with the adapter's summary intact.
+        let card = await_message(&owner, &id).await;
+        assert_eq!(
+            card.summary,
+            "[acme/widgets#42] Add retry to the upload path (by @octocat)"
+        );
+        assert_eq!(card.source, "webhook/github");
+
+        owner.shutdown().await.expect("shutdown owner");
+        Arc::try_unwrap(bridge)
+            .expect("sole bridge ref")
+            .shutdown()
+            .await
+            .expect("shutdown bridge");
+    }
+}
