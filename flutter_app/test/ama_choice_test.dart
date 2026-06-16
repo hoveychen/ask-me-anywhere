@@ -99,4 +99,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(changes.last, '/sel=[a, b]');
   });
+
+  group('Other (mutually exclusive)', () {
+    testWidgets('shows an Other field when bound', (tester) async {
+      await _pump(tester, _tree(otherBinding: {'path': '/other'}));
+      expect(find.widgetWithText(TextField, 'Other'), findsOneWidget);
+    });
+
+    testWidgets('typing Other clears the option selection', (tester) async {
+      final changes = <String>[];
+      await _pump(tester, _tree(otherBinding: {'path': '/other'}),
+          onData: (path, value) => changes.add('$path=$value'));
+
+      await tester.tap(find.text('Alpha'));
+      await tester.pumpAndSettle();
+      expect(changes, contains('/sel=[a]'));
+
+      await tester.enterText(find.byType(TextField), 'custom answer');
+      await tester.pumpAndSettle();
+      // Typing Other writes /other and clears /sel.
+      expect(changes, contains('/other=custom answer'));
+      expect(changes, contains('/sel=[]'));
+    });
+
+    testWidgets('picking an option clears Other', (tester) async {
+      final changes = <String>[];
+      await _pump(tester, _tree(otherBinding: {'path': '/other'}),
+          onData: (path, value) => changes.add('$path=$value'));
+
+      await tester.enterText(find.byType(TextField), 'custom');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Beta'));
+      await tester.pumpAndSettle();
+      // Selecting writes /sel and clears /other.
+      expect(changes, contains('/sel=[b]'));
+      expect(changes.where((c) => c == '/other=').isNotEmpty, isTrue);
+    });
+  });
 }

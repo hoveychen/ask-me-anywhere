@@ -9,6 +9,7 @@
 // in the pushed tree; we've only grown the catalog (see [cardCatalog]). The
 // selected value(s) bind to a data path exactly like ChoicePicker, so the
 // `allAnswered` gate and CRDT sync keep working unchanged.
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:genui/genui.dart';
 import 'package:json_schema_builder/json_schema_builder.dart';
@@ -19,8 +20,8 @@ const String amaChoiceName = 'AmaChoice';
 final _schema = S.object(
   description:
       'A single- or multi-select question where each option carries a label '
-      'and an optional description, with an optional free-text "Other" and '
-      'optional per-option preview.',
+      'and an optional description, with an optional free-text "Other" '
+      '(mutually exclusive with the options) and optional per-option preview.',
   properties: {
     'label': S.string(description: 'Heading shown above the options.'),
     'multiple': S.boolean(
@@ -48,8 +49,8 @@ final _schema = S.object(
   required: ['options', 'value'],
 );
 
-String _bindPath(Object? ref, String fallback) =>
-    (ref is Map && ref['path'] is String) ? ref['path'] as String : fallback;
+String? _bindPath(Object? ref) =>
+    (ref is Map && ref['path'] is String) ? ref['path'] as String : null;
 
 List<String> _asStringList(Object? v) {
   if (v == null) return const [];
@@ -58,77 +59,128 @@ List<String> _asStringList(Object? v) {
   return [v.toString()];
 }
 
-/// A single- or multi-select question with per-option descriptions. (Other +
-/// preview land in later steps.)
+/// A single- or multi-select question with per-option descriptions and an
+/// optional mutually-exclusive "Other" field. (Preview lands in P3.)
 final amaChoice = CatalogItem(
   name: amaChoiceName,
   dataSchema: _schema,
   isImplicitlyFlexible: true,
-  widgetBuilder: (itemContext) {
-    final JsonMap data = itemContext.data as JsonMap;
-    final bool multiple = data['multiple'] == true;
-    final List<JsonMap> options =
-        ((data['options'] as List?) ?? const []).cast<JsonMap>();
-    final String valuePath = _bindPath(data['value'], '${itemContext.id}.value');
-    final DataContext dc = itemContext.dataContext;
+  widgetBuilder: (itemContext) => _AmaChoice(itemContext: itemContext),
+);
 
+class _AmaChoice extends StatefulWidget {
+  const _AmaChoice({required this.itemContext});
+
+  final CatalogItemContext itemContext;
+
+  @override
+  State<_AmaChoice> createState() => _AmaChoiceState();
+}
+
+class _AmaChoiceState extends State<_AmaChoice> {
+  late final JsonMap _data = widget.itemContext.data as JsonMap;
+  late final DataContext _dc = widget.itemContext.dataContext;
+  late final bool _multiple = _data['multiple'] == true;
+  late final List<JsonMap> _options =
+      ((_data['options'] as List?) ?? const []).cast<JsonMap>();
+  late final String _valuePath =
+      _bindPath(_data['value']) ?? '${widget.itemContext.id}.value';
+  late final String? _otherPath = _bindPath(_data['other']);
+
+  final TextEditingController _otherCtrl = TextEditingController();
+  ValueListenable<Object?>? _otherListenable;
+
+  @override
+  void initState() {
+    super.initState();
+    final String? otherPath = _otherPath;
+    if (otherPath != null) {
+      final listenable = _dc.subscribe<Object?>(DataPath(otherPath));
+      _otherListenable = listenable;
+      _otherCtrl.text = (listenable.value ?? '').toString();
+      listenable.addListener(_syncOtherFromModel);
+    }
+  }
+
+  @override
+  void dispose() {
+    _otherListenable?.removeListener(_syncOtherFromModel);
+    _otherCtrl.dispose();
+    super.dispose();
+  }
+
+  // Mirror remote/model changes into the text field without fighting the caret.
+  void _syncOtherFromModel() {
+    final String v = (_otherListenable!.value ?? '').toString();
+    if (v != _otherCtrl.text) _otherCtrl.text = v;
+  }
+
+  void _pickOption(String optionValue, bool pick, List<String> selected) {
+    if (_multiple) {
+      final next = List<String>.from(selected);
+      if (pick) {
+        if (!next.contains(optionValue)) next.add(optionValue);
+      } else {
+        next.remove(optionValue);
+      }
+      _dc.update(DataPath(_valuePath), next);
+    } else {
+      _dc.update(DataPath(_valuePath), [optionValue]);
+    }
+    // Mutual exclusion: choosing an option clears any free-text "Other".
+    if (_otherPath != null && _otherCtrl.text.isNotEmpty) {
+      _dc.update(DataPath(_otherPath), '');
+    }
+  }
+
+  void _typeOther(String text) {
+    _dc.update(DataPath(_otherPath!), text);
+    // Mutual exclusion: typing "Other" clears the option selection.
+    if (text.isNotEmpty) _dc.update(DataPath(_valuePath), <String>[]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return ValueListenableBuilder<Object?>(
-      valueListenable: dc.subscribe<Object?>(DataPath(valuePath)),
+      valueListenable: _dc.subscribe<Object?>(DataPath(_valuePath)),
       builder: (context, current, _) {
         final List<String> selected = _asStringList(current);
+        final String? label = _data['label'] as String?;
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (data['label'] is String &&
-                (data['label'] as String).isNotEmpty)
+            if (label != null && label.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.only(left: 16, bottom: 4, top: 4),
-                child: Text(
-                  data['label'] as String,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
+                padding: const EdgeInsets.only(left: 16, top: 4, bottom: 4),
+                child: Text(label,
+                    style: Theme.of(context).textTheme.titleMedium),
               ),
-            for (final opt in options)
+            for (final opt in _options)
               _OptionTile(
                 option: opt,
-                multiple: multiple,
+                multiple: _multiple,
                 selected: selected.contains(opt['value']),
-                onChanged: (sel) => _updateSelection(
-                  dc: dc,
-                  valuePath: valuePath,
-                  optionValue: opt['value'] as String,
-                  multiple: multiple,
-                  selected: selected,
-                  pick: sel,
+                onChanged: (sel) =>
+                    _pickOption(opt['value'] as String, sel, selected),
+              ),
+            if (_otherPath != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: TextField(
+                  controller: _otherCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Other',
+                    hintText: 'Type your own answer',
+                  ),
+                  onChanged: _typeOther,
                 ),
               ),
           ],
         );
       },
     );
-  },
-);
-
-void _updateSelection({
-  required DataContext dc,
-  required String valuePath,
-  required String optionValue,
-  required bool multiple,
-  required List<String> selected,
-  required bool pick,
-}) {
-  if (!multiple) {
-    dc.update(DataPath(valuePath), [optionValue]);
-    return;
   }
-  final next = List<String>.from(selected);
-  if (pick) {
-    if (!next.contains(optionValue)) next.add(optionValue);
-  } else {
-    next.remove(optionValue);
-  }
-  dc.update(DataPath(valuePath), next);
 }
 
 class _OptionTile extends StatelessWidget {
