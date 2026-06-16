@@ -496,6 +496,124 @@ List<Map<String, Object?>> _stepButton({
   ];
 }
 
+/// Guard card — intercept a risky command (Fleet's guard decision). Shows the
+/// command + its risk tags and an optional block reason; Allow / Block fire
+/// `allow` / `block` events through the normal action → CRDT path.
+String _guard(String surfaceId) => _card(
+  surfaceId: surfaceId,
+  seeds: const {'/reason': ''},
+  components: [
+    {
+      'id': 'root',
+      'component': 'Column',
+      'children': ['heading', 'cmd', 'risks', 'reason', 'actions'],
+    },
+    {
+      'id': 'heading',
+      'component': 'Text',
+      'text': 'Allow this command to run?',
+      'variant': 'h3',
+    },
+    {'id': 'cmd', 'component': 'Text', 'text': r'$ rm -rf ./build'},
+    {
+      'id': 'risks',
+      'component': 'Text',
+      'text': '⚠ Risk: deletion · recursive · non-reversible',
+    },
+    {
+      'id': 'reason',
+      'component': 'TextField',
+      'label': 'Reason (if blocking)',
+      'value': {'path': '/reason'},
+    },
+    {
+      'id': 'actions',
+      'component': 'Row',
+      'children': ['allowBtn', 'blockBtn'],
+    },
+    {
+      'id': 'allowBtn',
+      'component': 'Button',
+      'variant': 'primary',
+      'child': 'allowText',
+      'action': {
+        'event': {'name': 'allow'},
+      },
+    },
+    {'id': 'allowText', 'component': 'Text', 'text': 'Allow'},
+    {
+      'id': 'blockBtn',
+      'component': 'Button',
+      'variant': 'borderless',
+      'child': 'blockText',
+      'action': {
+        'event': {'name': 'block'},
+      },
+    },
+    {'id': 'blockText', 'component': 'Text', 'text': 'Block'},
+  ],
+);
+
+/// Plan approval card — review an agent's plan (Fleet's plan-approval
+/// decision). Shows the plan body and an optional feedback note; Approve /
+/// Reject fire `approve` / `reject` events.
+String _planApproval(String surfaceId) => _card(
+  surfaceId: surfaceId,
+  seeds: const {'/feedback': ''},
+  components: [
+    {
+      'id': 'root',
+      'component': 'Column',
+      'children': ['heading', 'plan', 'feedback', 'actions'],
+    },
+    {
+      'id': 'heading',
+      'component': 'Text',
+      'text': 'Approve this plan?',
+      'variant': 'h3',
+    },
+    {
+      'id': 'plan',
+      'component': 'Text',
+      'text': '1. Add the auth middleware\n'
+          '2. Migrate the session store\n'
+          '3. Update the integration tests\n'
+          '4. Roll out behind a flag',
+    },
+    {
+      'id': 'feedback',
+      'component': 'TextField',
+      'label': 'Feedback (if rejecting)',
+      'value': {'path': '/feedback'},
+    },
+    {
+      'id': 'actions',
+      'component': 'Row',
+      'children': ['approveBtn', 'rejectBtn'],
+    },
+    {
+      'id': 'approveBtn',
+      'component': 'Button',
+      'variant': 'primary',
+      'child': 'approveText',
+      'action': {
+        'event': {'name': 'approve'},
+      },
+    },
+    {'id': 'approveText', 'component': 'Text', 'text': 'Approve'},
+    {
+      'id': 'rejectBtn',
+      'component': 'Button',
+      'variant': 'borderless',
+      'child': 'rejectText',
+      'action': {
+        'event': {'name': 'reject'},
+      },
+    },
+    {'id': 'rejectText', 'component': 'Text', 'text': 'Reject'},
+  ],
+);
+
 /// The full gallery the debug FAB cycles through, in display order. The first
 /// entry is the multi-question wizard; the last reuses the original sample
 /// (heading + note field + Approve/Dismiss).
@@ -505,6 +623,8 @@ List<GalleryCard> galleryCards = [
   GalleryCard(title: 'Multiple choice', build: _multiChoice),
   GalleryCard(title: 'Multiple choice (chips)', build: _multiChips),
   GalleryCard(title: 'Form', build: _form),
+  GalleryCard(title: 'Guard', build: _guard),
+  GalleryCard(title: 'Plan approval', build: _planApproval),
   GalleryCard(
     title: 'Note',
     build: (surfaceId) => sampleA2uiJson(surfaceId: surfaceId, title: 'Note'),
