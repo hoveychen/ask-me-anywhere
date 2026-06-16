@@ -95,7 +95,13 @@ curl -X POST https://webhook.example.com/push \
   -H "Content-Type: application/json" \
   --data '{
     "summary": "build #142 failed",
-    "a2ui": { "root": { "Text": { "text": "main → red" } } },
+    "a2ui": [
+      {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+      {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+        {"id":"root","component":"Column","children":["msg"]},
+        {"id":"msg","component":"Text","text":"main → red"}
+      ]}}
+    ],
     "source": "ci"
   }'
 ```
@@ -118,8 +124,23 @@ actionable 时构造的卡片:
 
 ```text
 summary = "[org/repo#42] Title (by @login)"
-a2ui    = Card { Text(summary), Text(body 截断 280 字), Button(label="Open PR", action.name="open_url", context={url: html_url}) }
+a2ui    = 一个 message 数组:createSurface + updateComponents,其中 root 是一个 Column,子组件为 Text(summary)、Text(body 截断 280 字)、以及一个 Button(其 child 指向一个 Text("Open PR")、action.event.name="open_url"、context={url: html_url})
 source  = "<--name>/github"  # 比如 "webhook/github"
+```
+
+具体形如:
+
+```json
+[
+  {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+  {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+    {"id":"root","component":"Column","children":["title","body","open"]},
+    {"id":"title","component":"Text","text":"[org/repo#42] Title (by @login)","variant":"h4"},
+    {"id":"body","component":"Text","text":"<body 截断 280 字>"},
+    {"id":"open","component":"Button","variant":"primary","child":"openText","action":{"event":{"name":"open_url","context":{"url":"<html_url>"}}}},
+    {"id":"openText","component":"Text","text":"Open PR"}
+  ]}}
+]
 ```
 
 #### GitHub 端配置
@@ -243,7 +264,7 @@ curl -fsSL -X POST "$HOST/ask" \
 ```json
 {
   "summary": "Title shown in the notification (REQUIRED)",
-  "a2ui":   { ... A2UI message tree, optional ... },
+  "a2ui":   [ ... A2UI message array, optional ... ],
   "source": "where this card came from (optional)"
 }
 ```
@@ -251,7 +272,7 @@ curl -fsSL -X POST "$HOST/ask" \
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 |---|---|---|---|---|
 | `summary` | string | 是 | — | 用于系统通知 + 列表摘要。短一点,~60 字符以内最佳 |
-| `a2ui` | object | 否 | `{}` | A2UI message tree。空对象时 Flutter 端就显示一个纯摘要卡片。详见 §5 |
+| `a2ui` | array | 否 | `[]` | A2UI message 数组(见 §5 的 wire 格式)。空数组时 Flutter 端就显示一个纯摘要卡片。详见 §5 |
 | `source` | string | 否 | `--name` 的值(`script`/`webhook`) | 标记这张卡片的来源。可以放 `"github"`、`"linear"`、`"ci"` 等;同步进所有副本 |
 
 `id` 和 `created_at` 由 `ama` 这边铸,不要在 JSON 里给(给了也会被忽略 —— `id` 用 UUIDv4,`created_at` 是 ms 时间戳)。
@@ -262,23 +283,20 @@ curl -fsSL -X POST "$HOST/ask" \
 
 ## 5. A2UI 卡片模板
 
-A2UI v0.9 message tree 是 Google 开源的协议;ask-me-anywhere 用 `genui` Flutter SDK 渲染。完整组件目录看 [A2UI 规格](https://github.com/google/A2UI/tree/main/specification/v0_9)。下面是几个常用模板。
+A2UI v0.9 是 Google 开源的协议;ask-me-anywhere 用 `genui` Flutter SDK 渲染。`genui` 只接受 **message 数组**这种 wire 格式:`a2ui` 是一个 JSON 数组,数组元素是一条条 message(`createSurface` / `updateDataModel` / `updateComponents`)。组件是**扁平对象**,带 `id` + `component` 字符串字段,父组件通过 `children` 数组里的 id 引用子组件。绑定用 `value:{path}`(`path` 是 JSON Pointer 字符串);按钮用一个 `child` Text 引用 + `action.event.name`。完整组件目录看 [A2UI 规格](https://github.com/google/A2UI/tree/main/specification/v0_9)。下面是几个常用模板。
 
 ### 5.1 纯文本通知
 
 ```json
 {
   "summary": "deploy succeeded",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text": { "id": "msg", "text": "main → production · build #142" } }
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["msg"]},
+      {"id":"msg","component":"Text","text":"main → production · build #142"}
+    ]}}
+  ]
 }
 ```
 
@@ -287,79 +305,122 @@ A2UI v0.9 message tree 是 Google 开源的协议;ask-me-anywhere 用 `genui` Fl
 ```json
 {
   "summary": "PR review requested",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text": { "id": "title", "text": "Review needed: foo refactor" } },
-          { "Text": { "id": "body",  "text": "Updates the BarService trait to async; ~200 LOC." } },
-          { "Button": {
-              "id": "open",
-              "label": "Open PR",
-              "action": {
-                "name": "open_url",
-                "context": { "url": "https://github.com/acme/widget/pull/42" }
-              }
-          }}
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["title","body","open"]},
+      {"id":"title","component":"Text","text":"Review needed: foo refactor"},
+      {"id":"body","component":"Text","text":"Updates the BarService trait to async; ~200 LOC."},
+      {"id":"open","component":"Button","variant":"primary","child":"openText","action":{"event":{"name":"open_url","context":{"url":"https://github.com/acme/widget/pull/42"}}}},
+      {"id":"openText","component":"Text","text":"Open PR"}
+    ]}}
+  ]
 }
 ```
 
 ### 5.3 带确认 / 拒绝两按钮
 
-`action.name == "dismiss"` 是约定的"关闭这张卡"(状态变 `Dismissed`),其它 action 名状态变 `Actioned`,`name + context` 写入 doc 同步给所有副本。
+`action.event.name == "dismiss"` 是约定的"关闭这张卡"(状态变 `Dismissed`),其它 action 名状态变 `Actioned`,`name + context` 写入 doc 同步给所有副本。
 
 ```json
 {
   "summary": "approve 500 USD expense?",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text": { "id": "q", "text": "Vendor: WidgetCo · Amount: $500" } },
-          { "Row": {
-              "id": "actions",
-              "children": [
-                { "Button": { "id": "ok",    "label": "Approve", "action": { "name": "approve" } } },
-                { "Button": { "id": "deny",  "label": "Deny",    "action": { "name": "dismiss" } } }
-              ]
-          }}
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["q","actions"]},
+      {"id":"q","component":"Text","text":"Vendor: WidgetCo · Amount: $500"},
+      {"id":"actions","component":"Row","children":["ok","deny"]},
+      {"id":"ok","component":"Button","variant":"primary","child":"okText","action":{"event":{"name":"approve"}}},
+      {"id":"okText","component":"Text","text":"Approve"},
+      {"id":"deny","component":"Button","child":"denyText","action":{"event":{"name":"dismiss"}}},
+      {"id":"denyText","component":"Text","text":"Deny"}
+    ]}}
+  ]
 }
 ```
 
 ### 5.4 带输入字段(data model 双向同步)
 
-字段的值绑到 doc 的 `data/<msgId>/<bindPath>` key,所有副本编辑同一字段时 LWW 收敛。`bindPath` 是 RFC 6901 JSON Pointer。
+字段的值绑到 doc 的 `data/<msgId>/<bindPath>` key,所有副本编辑同一字段时 LWW 收敛。组件上用 `value:{path}` 声明绑定,`path` 是 RFC 6901 JSON Pointer 字符串(如 `/note`);每个有绑定的字段都要在 `updateDataModel` 里给出一个初始 seed。
 
 ```json
 {
   "summary": "rate the build",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text":   { "id": "q",     "text": "How was deployment #142?" } },
-          { "Slider": { "id": "score", "value": 7, "min": 0, "max": 10, "step": 1, "bindPath": "/score" } },
-          { "TextField": { "id": "note", "label": "Any notes?", "bindPath": "/note" } },
-          { "Button": { "id": "submit", "label": "Submit", "action": { "name": "submit" } } }
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/score","value":7}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/note","value":""}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["q","score","note","submit"]},
+      {"id":"q","component":"Text","text":"How was deployment #142?"},
+      {"id":"score","component":"Slider","min":0,"max":10,"value":{"path":"/score"}},
+      {"id":"note","component":"TextField","label":"Any notes?","value":{"path":"/note"}},
+      {"id":"submit","component":"Button","variant":"primary","child":"submitText","action":{"event":{"name":"submit"}}},
+      {"id":"submitText","component":"Text","text":"Submit"}
+    ]}}
+  ]
 }
 ```
 
 提交时,A2UI renderer 调 action 写 `state/<msgId>` + `data/<msgId>/score` + `data/<msgId>/note`。所有副本几秒内都看到收敛后的值。
+
+### 5.5 AmaChoice — AMA 自定义组件(选项描述 / preview / Other)
+
+基础 catalog 的 `ChoicePicker` 选项只有 `{label, value}`。AMA 在 catalog 上扩了一个自定义组件 **`AmaChoice`**(仍是 A2UI —— agent 按组件名引用,只是 catalog 长大了),补齐 Claude Code AskUserQuestion 的保真度。字段:
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `label` | string | 选项组标题 |
+| `multiple` | bool | `true`=多选(checkbox),`false`/省略=单选(radio) |
+| `value` | `{path}` | 选中值绑定路径(始终是列表;单选即单元素列表) |
+| `other` | `{path}` | 可选。给了就显示一个 Other 文本框,与选项**互斥**(选了选项清空 Other,填了 Other 清空选项) |
+| `options` | 数组 | `[{label, value, description?, preview?}]`。单选选中带 `preview` 的项时,下方显示该 preview 面板 |
+
+```json
+{
+  "summary": "deploy target?",
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/env","value":[]}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/envOther","value":""}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["pick","ok"]},
+      {"id":"pick","component":"AmaChoice","label":"Target","value":{"path":"/env"},"other":{"path":"/envOther"},
+       "options":[
+         {"label":"Production","value":"prod","description":"Live traffic","preview":"prod.example.com · 不可撤销"},
+         {"label":"Staging","value":"staging","description":"Pre-prod mirror"}
+       ]},
+      {"id":"ok","component":"Button","variant":"primary","child":"okt","action":{"event":{"name":"confirm"}}},
+      {"id":"okt","component":"Text","text":"Confirm"}
+    ]}}
+  ]
+}
+```
+
+答复落在 `data/<id>/env`(选项,列表)和 `data/<id>/envOther`(Other 文本)—— 二者互斥,只有一个非空。
+
+### 5.6 客户端函数:门控与动作
+
+A2UI 的 `checks`(组件启用条件)和 `action.functionCall`(按钮调用)可引用宿主注册的客户端函数。AMA 注册了三个:
+
+| 函数 | 用在 | 作用 |
+|---|---|---|
+| `allAnswered` | `checks.condition` | 所有参数都"已答"(非空列表 / 非空白串 / 非 null)才 true |
+| `anyAnswered` | `checks.condition` | 任一参数已答即 true(用于"选项 OR Other") |
+| `setData` | `action.functionCall` | 把 `args.value` 写进 `args.path` 数据路径(按钮驱动状态,如切 tab) |
+
+```json
+"checks":[{"message":"先答完","condition":{"call":"allAnswered","args":{"a":{"path":"/env"},"b":{"path":"/note"}}}}]
+```
+
+`checks.condition` 为真 → 组件启用;任一 check 为假 → 禁用。**注意**:genui 把"非 null"当真(空列表 `[]` 也算),所以判"未答"必须用 `allAnswered`/`anyAnswered`,不能直接 `{path}`。`setData` 动作:`"action":{"functionCall":{"call":"setData","args":{"path":"/step","value":1}}}`。
+
+### 5.7 多问题向导(Tabs 渐进式 Next/Confirm)
+
+一卡多问的做法:`Tabs` 的 `activeTab` 绑 `/step`,每 tab 一个问题。每个非末 tab 放一个 **Next** 按钮 —— `action` 用 `setData` 把 `/step` 写成下一个索引来切 tab,`checks` 用 `anyAnswered` 门控(当前题答了才能点);末 tab 放 **Confirm**(`event` 动作,`checks` 用 `allAnswered` 嵌 `anyAnswered`,要求每题都答)。tab 头本身也能点着导航。整套纯 A2UI,远端可推。
+
+要点:Next/Back 是 `setData`(只写 data,`status` 仍 `Unread`),所以**不会结束 `/ask` 的阻塞等待**;只有 Confirm 的 `event`→`recordAction` 把状态置 `Actioned`、`/ask` 才返回。多步向导与同步问答天然契合。
 
 ## 6. 各语言示例
 
@@ -389,20 +450,21 @@ r = requests.post(
     headers={"Authorization": f"Bearer {TOKEN}"},
     json={
         "summary": "deploy build #142?",
-        "a2ui": {
-            "root": {
-                "Card": {
-                    "id": "root",
-                    "children": [
-                        {"Text": {"id": "q", "text": "Approve deploy?"}},
-                        {"Button": {"id": "ok", "label": "Approve",
-                                    "action": {"name": "approve"}}},
-                        {"Button": {"id": "no", "label": "Dismiss",
-                                    "action": {"name": "dismiss"}}},
-                    ],
-                }
-            }
-        },
+        "a2ui": [
+            {"version": "v0.9", "createSurface": {
+                "surfaceId": "card",
+                "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+            {"version": "v0.9", "updateComponents": {"surfaceId": "card", "components": [
+                {"id": "root", "component": "Column", "children": ["q", "ok", "no"]},
+                {"id": "q", "component": "Text", "text": "Approve deploy?"},
+                {"id": "ok", "component": "Button", "variant": "primary",
+                 "child": "okText", "action": {"event": {"name": "approve"}}},
+                {"id": "okText", "component": "Text", "text": "Approve"},
+                {"id": "no", "component": "Button",
+                 "child": "noText", "action": {"event": {"name": "dismiss"}}},
+                {"id": "noText", "component": "Text", "text": "Dismiss"},
+            ]}},
+        ],
         "timeout_secs": 90,
     },
     timeout=120,
@@ -442,15 +504,18 @@ import (
 func main() {
     body, _ := json.Marshal(map[string]any{
         "summary": "build finished",
-        "a2ui": map[string]any{
-            "root": map[string]any{
-                "Card": map[string]any{
-                    "id": "root",
-                    "children": []any{
-                        map[string]any{"Text": map[string]any{"id": "msg", "text": "build #142 green"}},
-                    },
+        "a2ui": []any{
+            map[string]any{"version": "v0.9", "createSurface": map[string]any{
+                "surfaceId": "card",
+                "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json",
+            }},
+            map[string]any{"version": "v0.9", "updateComponents": map[string]any{
+                "surfaceId": "card",
+                "components": []any{
+                    map[string]any{"id": "root", "component": "Column", "children": []any{"msg"}},
+                    map[string]any{"id": "msg", "component": "Text", "text": "build #142 green"},
                 },
-            },
+            }},
         },
         "source": "ci",
     })

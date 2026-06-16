@@ -95,7 +95,13 @@ curl -X POST https://webhook.example.com/push \
   -H "Content-Type: application/json" \
   --data '{
     "summary": "build #142 failed",
-    "a2ui": { "root": { "Text": { "text": "main → red" } } },
+    "a2ui": [
+      {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+      {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+        {"id":"root","component":"Column","children":["msg"]},
+        {"id":"msg","component":"Text","text":"main → red"}
+      ]}}
+    ],
     "source": "ci"
   }'
 ```
@@ -118,8 +124,23 @@ When actionable, the constructed card looks like:
 
 ```text
 summary = "[org/repo#42] Title (by @login)"
-a2ui    = Card { Text(summary), Text(body truncated to 280 chars), Button(label="Open PR", action.name="open_url", context={url: html_url}) }
+a2ui    = a message array: createSurface + updateComponents, where root is a Column whose children are Text(summary), Text(body truncated to 280 chars), and a Button (its child points to a Text("Open PR"), action.event.name="open_url", context={url: html_url})
 source  = "<--name>/github"   # e.g. "webhook/github"
+```
+
+Concretely:
+
+```json
+[
+  {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+  {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+    {"id":"root","component":"Column","children":["title","body","open"]},
+    {"id":"title","component":"Text","text":"[org/repo#42] Title (by @login)","variant":"h4"},
+    {"id":"body","component":"Text","text":"<body truncated to 280 chars>"},
+    {"id":"open","component":"Button","variant":"primary","child":"openText","action":{"event":{"name":"open_url","context":{"url":"<html_url>"}}}},
+    {"id":"openText","component":"Text","text":"Open PR"}
+  ]}}
+]
 ```
 
 #### GitHub-side setup
@@ -243,7 +264,7 @@ Both `/push` and `ama send --card-file` consume the same shape:
 ```json
 {
   "summary": "Title shown in the notification (REQUIRED)",
-  "a2ui":   { ... A2UI message tree, optional ... },
+  "a2ui":   [ ... A2UI message array, optional ... ],
   "source": "where this card came from (optional)"
 }
 ```
@@ -251,34 +272,31 @@ Both `/push` and `ama send --card-file` consume the same shape:
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `summary` | string | yes | — | System notification + list summary text. Keep it short (~60 chars). |
-| `a2ui` | object | no | `{}` | A2UI message tree. With `{}`, the Flutter end shows a summary-only card. See §5. |
+| `a2ui` | array | no | `[]` | A2UI message array (wire format in §5). With `[]`, the Flutter end shows a summary-only card. See §5. |
 | `source` | string | no | `--name` value (`script` / `webhook`) | Marks the card's origin. Free-form (`"github"`, `"linear"`, `"ci"`); syncs to every replica. |
 
 `id` and `created_at` are minted by `ama` — don't pass them in JSON (they're ignored — `id` is a fresh UUIDv4, `created_at` is ms epoch).
 
 ### Validation
 
-Missing `summary` → axum parse failure → `422` (the response body names the missing field). All other fields are optional. The `a2ui` field is not internally schema-checked — a malformed tree renders as a fallback in the Flutter renderer.
+Missing `summary` → axum parse failure → `422` (the response body names the missing field). All other fields are optional. The `a2ui` field is not internally schema-checked — a malformed message array renders as a fallback in the Flutter renderer.
 
 ## 5. A2UI card templates
 
-A2UI v0.9 message tree is Google's open spec; ask-me-anywhere renders it via the `genui` Flutter SDK. The full component catalog lives in the [A2UI spec](https://github.com/google/A2UI/tree/main/specification/v0_9). Common templates below.
+A2UI v0.9 is Google's open spec; ask-me-anywhere renders it via the `genui` Flutter SDK. `genui` accepts only the **message-array** wire format: `a2ui` is a JSON array of messages (`createSurface` / `updateDataModel` / `updateComponents`). Components are **flat objects** with `id` + `component` string fields, referenced by id from a parent's `children` array. Bindings use `value:{path}` (where `path` is a JSON-Pointer string); buttons use a `child` Text ref + `action.event.name`. The full component catalog lives in the [A2UI spec](https://github.com/google/A2UI/tree/main/specification/v0_9). Common templates below.
 
 ### 5.1 Text-only
 
 ```json
 {
   "summary": "deploy succeeded",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text": { "id": "msg", "text": "main → production · build #142" } }
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["msg"]},
+      {"id":"msg","component":"Text","text":"main → production · build #142"}
+    ]}}
+  ]
 }
 ```
 
@@ -287,79 +305,122 @@ A2UI v0.9 message tree is Google's open spec; ask-me-anywhere renders it via the
 ```json
 {
   "summary": "PR review requested",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text": { "id": "title", "text": "Review needed: foo refactor" } },
-          { "Text": { "id": "body",  "text": "Updates the BarService trait to async; ~200 LOC." } },
-          { "Button": {
-              "id": "open",
-              "label": "Open PR",
-              "action": {
-                "name": "open_url",
-                "context": { "url": "https://github.com/acme/widget/pull/42" }
-              }
-          }}
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["title","body","open"]},
+      {"id":"title","component":"Text","text":"Review needed: foo refactor"},
+      {"id":"body","component":"Text","text":"Updates the BarService trait to async; ~200 LOC."},
+      {"id":"open","component":"Button","variant":"primary","child":"openText","action":{"event":{"name":"open_url","context":{"url":"https://github.com/acme/widget/pull/42"}}}},
+      {"id":"openText","component":"Text","text":"Open PR"}
+    ]}}
+  ]
 }
 ```
 
 ### 5.3 Approve / deny
 
-`action.name == "dismiss"` is the convention for "close this card" (state flips to `Dismissed`); any other action name flips the state to `Actioned` and writes `name + context` into the doc.
+`action.event.name == "dismiss"` is the convention for "close this card" (state flips to `Dismissed`); any other action name flips the state to `Actioned` and writes `name + context` into the doc.
 
 ```json
 {
   "summary": "approve 500 USD expense?",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text": { "id": "q", "text": "Vendor: WidgetCo · Amount: $500" } },
-          { "Row": {
-              "id": "actions",
-              "children": [
-                { "Button": { "id": "ok",    "label": "Approve", "action": { "name": "approve" } } },
-                { "Button": { "id": "deny",  "label": "Deny",    "action": { "name": "dismiss" } } }
-              ]
-          }}
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["q","actions"]},
+      {"id":"q","component":"Text","text":"Vendor: WidgetCo · Amount: $500"},
+      {"id":"actions","component":"Row","children":["ok","deny"]},
+      {"id":"ok","component":"Button","variant":"primary","child":"okText","action":{"event":{"name":"approve"}}},
+      {"id":"okText","component":"Text","text":"Approve"},
+      {"id":"deny","component":"Button","child":"denyText","action":{"event":{"name":"dismiss"}}},
+      {"id":"denyText","component":"Text","text":"Deny"}
+    ]}}
+  ]
 }
 ```
 
 ### 5.4 Form input (two-way data-model sync)
 
-Field values bind to the doc's `data/<msgId>/<bindPath>` keys; concurrent edits LWW-converge across replicas. `bindPath` is an RFC 6901 JSON Pointer.
+Field values bind to the doc's `data/<msgId>/<bindPath>` keys; concurrent edits LWW-converge across replicas. Declare the binding on the component with `value:{path}`, where `path` is an RFC 6901 JSON Pointer string (e.g. `/note`); every bound field also needs an initial seed in an `updateDataModel` message.
 
 ```json
 {
   "summary": "rate the build",
-  "a2ui": {
-    "root": {
-      "Card": {
-        "id": "root",
-        "children": [
-          { "Text":   { "id": "q",     "text": "How was deployment #142?" } },
-          { "Slider": { "id": "score", "value": 7, "min": 0, "max": 10, "step": 1, "bindPath": "/score" } },
-          { "TextField": { "id": "note", "label": "Any notes?", "bindPath": "/note" } },
-          { "Button": { "id": "submit", "label": "Submit", "action": { "name": "submit" } } }
-        ]
-      }
-    }
-  }
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/score","value":7}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/note","value":""}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["q","score","note","submit"]},
+      {"id":"q","component":"Text","text":"How was deployment #142?"},
+      {"id":"score","component":"Slider","min":0,"max":10,"value":{"path":"/score"}},
+      {"id":"note","component":"TextField","label":"Any notes?","value":{"path":"/note"}},
+      {"id":"submit","component":"Button","variant":"primary","child":"submitText","action":{"event":{"name":"submit"}}},
+      {"id":"submitText","component":"Text","text":"Submit"}
+    ]}}
+  ]
 }
 ```
 
 On submit, the A2UI renderer fires the action, which writes `state/<msgId>` + `data/<msgId>/score` + `data/<msgId>/note`. Every replica sees the converged value within seconds.
+
+### 5.5 AmaChoice — AMA's custom component (option description / preview / Other)
+
+The basic catalog's `ChoicePicker` options carry only `{label, value}`. AMA extends the catalog with a custom component, **`AmaChoice`** (still A2UI — an agent references it by component name; the catalog just grew), to match Claude Code's AskUserQuestion fidelity. Fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `label` | string | Heading above the options |
+| `multiple` | bool | `true` = multi-select (checkboxes); `false`/omitted = single (radios) |
+| `value` | `{path}` | Bound path for the selection (always a list; single-select is a one-element list) |
+| `other` | `{path}` | Optional. When set, shows an Other text field that is **mutually exclusive** with the options (pick an option → Other clears; type Other → selection clears) |
+| `options` | array | `[{label, value, description?, preview?}]`. In single-select, choosing an option that has a `preview` shows that preview panel below |
+
+```json
+{
+  "summary": "deploy target?",
+  "a2ui": [
+    {"version":"v0.9","createSurface":{"surfaceId":"card","catalogId":"https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/env","value":[]}},
+    {"version":"v0.9","updateDataModel":{"surfaceId":"card","path":"/envOther","value":""}},
+    {"version":"v0.9","updateComponents":{"surfaceId":"card","components":[
+      {"id":"root","component":"Column","children":["pick","ok"]},
+      {"id":"pick","component":"AmaChoice","label":"Target","value":{"path":"/env"},"other":{"path":"/envOther"},
+       "options":[
+         {"label":"Production","value":"prod","description":"Live traffic","preview":"prod.example.com · irreversible"},
+         {"label":"Staging","value":"staging","description":"Pre-prod mirror"}
+       ]},
+      {"id":"ok","component":"Button","variant":"primary","child":"okt","action":{"event":{"name":"confirm"}}},
+      {"id":"okt","component":"Text","text":"Confirm"}
+    ]}}
+  ]
+}
+```
+
+The reply lands in `data/<id>/env` (the option, a list) and `data/<id>/envOther` (the Other text) — mutually exclusive, only one is non-empty.
+
+### 5.6 Client functions: gating and actions
+
+A2UI's `checks` (component-enabled conditions) and `action.functionCall` (button calls) can reference host-registered client functions. AMA registers three:
+
+| Function | Used in | Effect |
+|---|---|---|
+| `allAnswered` | `checks.condition` | True only when every argument is answered (non-empty list / non-blank string / non-null) |
+| `anyAnswered` | `checks.condition` | True when any argument is answered (for "option OR Other") |
+| `setData` | `action.functionCall` | Writes `args.value` into the `args.path` data path (button-driven state, e.g. switching tabs) |
+
+```json
+"checks":[{"message":"answer first","condition":{"call":"allAnswered","args":{"a":{"path":"/env"},"b":{"path":"/note"}}}}]
+```
+
+A check's `condition` true → component enabled; any check false → disabled. **Note**: genui treats "non-null" as true (an empty list `[]` counts), so test "unanswered" with `allAnswered`/`anyAnswered`, never a bare `{path}`. The `setData` action: `"action":{"functionCall":{"call":"setData","args":{"path":"/step","value":1}}}`.
+
+### 5.7 Multi-question wizard (Tabs, progressive Next/Confirm)
+
+To ask several questions on one card: bind `Tabs`' `activeTab` to `/step`, one question per tab. Each non-final tab carries a **Next** button — its `action` uses `setData` to write `/step` to the next index (switching the tab), and its `checks` use `anyAnswered` to gate it (you can only advance once the current question is answered). The last tab carries **Confirm** (an `event` action; `checks` use `allAnswered` wrapping `anyAnswered` to require every question). The tab headers themselves also navigate. All pure A2UI, pushable from anywhere.
+
+Key point: Next/Back are `setData` (they only write data, `status` stays `Unread`), so they do **not** end a `/ask` wait; only Confirm's `event`→`recordAction` flips the state to `Actioned` and lets `/ask` return. The step-through wizard composes naturally with synchronous ask-and-wait.
 
 ## 6. Language examples
 
@@ -389,20 +450,21 @@ r = requests.post(
     headers={"Authorization": f"Bearer {TOKEN}"},
     json={
         "summary": "deploy build #142?",
-        "a2ui": {
-            "root": {
-                "Card": {
-                    "id": "root",
-                    "children": [
-                        {"Text": {"id": "q", "text": "Approve deploy?"}},
-                        {"Button": {"id": "ok", "label": "Approve",
-                                    "action": {"name": "approve"}}},
-                        {"Button": {"id": "no", "label": "Dismiss",
-                                    "action": {"name": "dismiss"}}},
-                    ],
-                }
-            }
-        },
+        "a2ui": [
+            {"version": "v0.9", "createSurface": {
+                "surfaceId": "card",
+                "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"}},
+            {"version": "v0.9", "updateComponents": {"surfaceId": "card", "components": [
+                {"id": "root", "component": "Column", "children": ["q", "ok", "no"]},
+                {"id": "q", "component": "Text", "text": "Approve deploy?"},
+                {"id": "ok", "component": "Button", "variant": "primary",
+                 "child": "okText", "action": {"event": {"name": "approve"}}},
+                {"id": "okText", "component": "Text", "text": "Approve"},
+                {"id": "no", "component": "Button",
+                 "child": "noText", "action": {"event": {"name": "dismiss"}}},
+                {"id": "noText", "component": "Text", "text": "Dismiss"},
+            ]}},
+        ],
         "timeout_secs": 90,
     },
     timeout=120,
@@ -442,15 +504,18 @@ import (
 func main() {
     body, _ := json.Marshal(map[string]any{
         "summary": "build finished",
-        "a2ui": map[string]any{
-            "root": map[string]any{
-                "Card": map[string]any{
-                    "id": "root",
-                    "children": []any{
-                        map[string]any{"Text": map[string]any{"id": "msg", "text": "build #142 green"}},
-                    },
+        "a2ui": []any{
+            map[string]any{"version": "v0.9", "createSurface": map[string]any{
+                "surfaceId": "card",
+                "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json",
+            }},
+            map[string]any{"version": "v0.9", "updateComponents": map[string]any{
+                "surfaceId": "card",
+                "components": []any{
+                    map[string]any{"id": "root", "component": "Column", "children": []any{"msg"}},
+                    map[string]any{"id": "msg", "component": "Text", "text": "build #142 green"},
                 },
-            },
+            }},
         },
         "source": "ci",
     })
