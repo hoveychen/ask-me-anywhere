@@ -13,12 +13,13 @@
 //! live in the blobs store keyed by each entry's content hash, so reads go
 //! through [`BlobsStore::get_bytes`].
 
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use futures_lite::StreamExt;
 use iroh::{protocol::Router, Endpoint};
-use iroh_blobs::{api::Store as BlobsStore, store::mem::MemStore, BlobsProtocol};
+use iroh_blobs::{api::Store as BlobsStore, store::fs::FsStore, store::mem::MemStore, BlobsProtocol};
 use iroh_docs::{
     api::{
         protocol::{AddrInfoOptions, ShareMode},
@@ -51,27 +52,72 @@ pub struct Inbox {
 }
 
 impl Inbox {
-    /// Spawn a fresh node on `endpoint` and create a brand-new inbox document.
-    /// The returned inbox is the first replica; share [`Inbox::ticket`] to let
-    /// other devices [`Inbox::join`] it.
-    pub async fn create(endpoint: Endpoint, device: impl Into<String>) -> Result<Self> {
-        let (router, blobs, docs) = spawn_node(endpoint).await?;
+    /// Spawn a node on `endpoint` and create a brand-new inbox document. The
+    /// returned inbox is the first replica; share [`Inbox::ticket`] to let other
+    /// devices [`Inbox::join`] it.
+    ///
+    /// When `data_dir` is `Some`, the node uses persistent on-disk stores and
+    /// records the new doc's namespace there, so a later [`Inbox::open`] on the
+    /// same dir reopens *this* inbox instead of starting empty. `None` keeps
+    /// everything in memory (tests / throwaway nodes).
+    pub async fn create(
+        endpoint: Endpoint,
+        device: impl Into<String>,
+        data_dir: Option<&Path>,
+    ) -> Result<Self> {
+        let (router, blobs, docs) = spawn_node(endpoint, data_dir).await?;
         let doc = docs.create().await.context("create inbox doc")?;
         let author = docs.author_default().await.context("default author")?;
+        if let Some(dir) = data_dir {
+            save_namespace(dir, doc.id())?;
+        }
         Ok(Self { router, blobs, doc, author, device: device.into() })
     }
 
-    /// Spawn a fresh node on `endpoint` and join an existing inbox via a
-    /// [`DocTicket`] (the payload of the pairing QR code). Joins automatically
-    /// start syncing with the ticket's peers.
+    /// Reopen the persisted inbox stored under `data_dir`, or `Ok(None)` when
+    /// this dir has never created/joined one (no saved namespace, or its replica
+    /// is missing from the store). The companion to [`Inbox::create`]: an app
+    /// boots by trying `open` first and falling back to `create`.
+    pub async fn open(
+        endpoint: Endpoint,
+        device: impl Into<String>,
+        data_dir: &Path,
+    ) -> Result<Option<Self>> {
+        let Some(id) = load_namespace(data_dir)? else {
+            return Ok(None);
+        };
+        let (router, blobs, docs) = spawn_node(endpoint, Some(data_dir)).await?;
+        let Some(doc) = docs.open(id).await.context("open persisted inbox doc")? else {
+            return Ok(None);
+        };
+        let author = docs.author_default().await.context("default author")?;
+        Ok(Some(Self { router, blobs, doc, author, device: device.into() }))
+    }
+
+    /// Whether a persisted inbox already lives under `data_dir` (i.e. a prior
+    /// `create`/`join` recorded its namespace there). Lets a caller decide
+    /// between [`Inbox::open`] and [`Inbox::create`] *before* binding an
+    /// endpoint, so the choice costs no extra node.
+    pub fn is_persisted(data_dir: &Path) -> Result<bool> {
+        Ok(load_namespace(data_dir)?.is_some())
+    }
+
+    /// Spawn a node on `endpoint` and join an existing inbox via a [`DocTicket`]
+    /// (the payload of the pairing QR code). Joins automatically start syncing
+    /// with the ticket's peers. `data_dir` behaves as in [`Inbox::create`]:
+    /// `Some` persists the joined inbox so it survives a restart.
     pub async fn join(
         endpoint: Endpoint,
         ticket: DocTicket,
         device: impl Into<String>,
+        data_dir: Option<&Path>,
     ) -> Result<Self> {
-        let (router, blobs, docs) = spawn_node(endpoint).await?;
+        let (router, blobs, docs) = spawn_node(endpoint, data_dir).await?;
         let doc = docs.import(ticket).await.context("import inbox doc from ticket")?;
         let author = docs.author_default().await.context("default author")?;
+        if let Some(dir) = data_dir {
+            save_namespace(dir, doc.id())?;
+        }
         Ok(Self { router, blobs, doc, author, device: device.into() })
     }
 
@@ -113,9 +159,10 @@ impl Inbox {
         endpoint: Endpoint,
         ticket: &str,
         device: impl Into<String>,
+        data_dir: Option<&Path>,
     ) -> Result<Self> {
         let ticket: DocTicket = ticket.parse().context("parse doc ticket")?;
-        Self::join(endpoint, ticket, device).await
+        Self::join(endpoint, ticket, device, data_dir).await
     }
 
     // ---- messages (msg/<id>, immutable) -----------------------------------
@@ -298,13 +345,44 @@ impl Inbox {
 
 /// Build the iroh node: bind the blobs, gossip and docs protocols onto a router
 /// over `endpoint`, exactly as iroh-docs' own `examples/setup.rs` does.
-async fn spawn_node(endpoint: Endpoint) -> Result<(Router, BlobsStore, Docs)> {
-    let blobs = MemStore::new();
+///
+/// `data_dir = Some(dir)` uses persistent stores (an [`FsStore`] under
+/// `dir/blobs` and a persistent docs replica db under `dir/docs`); `None` keeps
+/// both in memory. The returned [`BlobsStore`] handle keeps the backing store's
+/// actor (and, for `FsStore`, its runtime) alive for the node's lifetime, so we
+/// don't need to retain the concrete store wrapper.
+async fn spawn_node(
+    endpoint: Endpoint,
+    data_dir: Option<&Path>,
+) -> Result<(Router, BlobsStore, Docs)> {
     let gossip = Gossip::builder().spawn(endpoint.clone());
-    let docs = Docs::memory()
-        .spawn(endpoint.clone(), (*blobs).clone(), gossip.clone())
-        .await
-        .context("spawn docs protocol")?;
+
+    let (blobs, docs): (BlobsStore, Docs) = match data_dir {
+        Some(dir) => {
+            // redb won't create its parent dir, so make both store dirs up front.
+            let docs_dir = dir.join("docs");
+            std::fs::create_dir_all(&docs_dir)
+                .with_context(|| format!("create docs dir {}", docs_dir.display()))?;
+            let store = FsStore::load(dir.join("blobs"))
+                .await
+                .context("load persistent blobs store")?;
+            let blobs: BlobsStore = (*store).clone();
+            let docs = Docs::persistent(docs_dir)
+                .spawn(endpoint.clone(), blobs.clone(), gossip.clone())
+                .await
+                .context("spawn docs protocol (persistent)")?;
+            (blobs, docs)
+        }
+        None => {
+            let store = MemStore::new();
+            let blobs: BlobsStore = (*store).clone();
+            let docs = Docs::memory()
+                .spawn(endpoint.clone(), blobs.clone(), gossip.clone())
+                .await
+                .context("spawn docs protocol (memory)")?;
+            (blobs, docs)
+        }
+    };
 
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
@@ -312,7 +390,40 @@ async fn spawn_node(endpoint: Endpoint) -> Result<(Router, BlobsStore, Docs)> {
         .accept(iroh_docs::ALPN, docs.clone())
         .spawn();
 
-    Ok((router, (*blobs).clone(), docs))
+    Ok((router, blobs, docs))
+}
+
+/// Path of the file recording which doc namespace is *this* data dir's inbox.
+/// The persistent docs store can hold many replicas; this single-line file
+/// remembers the one [`Inbox::open`] should reopen.
+fn namespace_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("inbox-namespace")
+}
+
+/// Record the inbox's namespace id under `data_dir` (overwrites any prior one —
+/// a dir holds exactly one inbox).
+fn save_namespace(data_dir: &Path, id: NamespaceId) -> Result<()> {
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("create data dir {}", data_dir.display()))?;
+    let path = namespace_path(data_dir);
+    std::fs::write(&path, id.to_string())
+        .with_context(|| format!("write inbox namespace {}", path.display()))
+}
+
+/// Read the inbox namespace recorded under `data_dir`, or `None` if none has
+/// been created/joined here yet.
+fn load_namespace(data_dir: &Path) -> Result<Option<NamespaceId>> {
+    let path = namespace_path(data_dir);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("read inbox namespace {}", path.display()))?;
+    let id: NamespaceId = raw
+        .trim()
+        .parse()
+        .with_context(|| format!("parse inbox namespace from {}", path.display()))?;
+    Ok(Some(id))
 }
 
 /// Current unix time in milliseconds, for [`MessageState::ts`].

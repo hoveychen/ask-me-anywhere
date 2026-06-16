@@ -9,8 +9,10 @@
 // and calls the action-forwarding methods.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Directory;
 
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'package:flutter_app/src/a2ui_gallery.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
@@ -79,11 +81,35 @@ class InboxHandleApi implements InboxApi {
 typedef InboxFactory = Future<InboxApi> Function();
 typedef JoinFactory = Future<InboxApi> Function(String ticket);
 
-Future<InboxApi> _defaultCreate() async =>
-    InboxHandleApi(await InboxHandle.create(device: 'desktop'));
+/// On-disk home for the inbox: iroh blobs store, docs replica db and the
+/// device's long-term node-key all live here, so messages and identity survive
+/// a restart. `<app-support>/ama-inbox` — app-support is the right spot for
+/// app-private data the user never browses (vs. documents/cache).
+Future<String> _inboxDataDir() async {
+  final Directory base = await getApplicationSupportDirectory();
+  final Directory dir = Directory('${base.path}/ama-inbox');
+  await dir.create(recursive: true);
+  return dir.path;
+}
 
-Future<InboxApi> _defaultJoin(String ticket) async =>
-    InboxHandleApi(await InboxHandle.join(ticket: ticket, device: 'desktop'));
+/// Boot the persistent inbox: reopen the one stored on disk, or create a fresh
+/// one the very first launch. Either way it's rooted at [_inboxDataDir], so a
+/// relaunch comes back to the same inbox instead of an empty in-memory node.
+Future<InboxApi> _defaultCreate() async {
+  final String dataDir = await _inboxDataDir();
+  final InboxHandle? existing =
+      await InboxHandle.open(device: 'desktop', dataDir: dataDir);
+  final InboxHandle handle =
+      existing ?? await InboxHandle.create(device: 'desktop', dataDir: dataDir);
+  return InboxHandleApi(handle);
+}
+
+Future<InboxApi> _defaultJoin(String ticket) async {
+  final String dataDir = await _inboxDataDir();
+  return InboxHandleApi(
+    await InboxHandle.join(ticket: ticket, device: 'desktop', dataDir: dataDir),
+  );
+}
 
 /// Shared, observable inbox state. Construct your own (with injected deps) in
 /// tests; production code uses [AssistantController.instance].
