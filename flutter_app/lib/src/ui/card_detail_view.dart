@@ -16,6 +16,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:genui/genui.dart';
 
+import 'package:flutter_app/src/a2ui_functions.dart';
 import 'package:flutter_app/src/data/card_data_bridge.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 
@@ -111,8 +112,7 @@ class _CardDetailViewState extends State<CardDetailView> {
     final String? surfaceId = firstSurfaceId(messages);
     if (surfaceId == null) return;
 
-    final controller =
-        SurfaceController(catalogs: [BasicCatalogItems.asCatalog()]);
+    final controller = SurfaceController(catalogs: [cardCatalog]);
     try {
       for (final message in messages) {
         controller.handleMessage(A2uiMessage.fromJson(message));
