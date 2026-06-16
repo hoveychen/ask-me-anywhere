@@ -797,25 +797,42 @@ fn github_pr_to_card(p: &GithubPrPayload, default_source: &str) -> MessageCard {
         .chars()
         .take(280)
         .collect::<String>();
-    let a2ui = serde_json::json!({
-        "root": {
-            "Card": {
-                "id": "root",
-                "children": [
-                    { "Text": { "id": "title", "text": summary.clone() } },
-                    { "Text": { "id": "body", "text": body_excerpt } },
-                    { "Button": {
+    // A2UI v0.9 message array (createSurface → updateComponents). This is the
+    // wire form the genui renderer actually accepts; the older {root:{Card}}
+    // object shape rendered as a summary-only fallback (no Open PR button).
+    let a2ui = serde_json::json!([
+        {
+            "version": "v0.9",
+            "createSurface": {
+                "surfaceId": "card",
+                "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json"
+            }
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "card",
+                "components": [
+                    { "id": "root", "component": "Column", "children": ["title", "body", "open"] },
+                    { "id": "title", "component": "Text", "text": summary.clone(), "variant": "h4" },
+                    { "id": "body", "component": "Text", "text": body_excerpt },
+                    {
                         "id": "open",
-                        "label": "Open PR",
+                        "component": "Button",
+                        "variant": "primary",
+                        "child": "openText",
                         "action": {
-                            "name": "open_url",
-                            "context": { "url": p.pull_request.html_url.clone() }
+                            "event": {
+                                "name": "open_url",
+                                "context": { "url": p.pull_request.html_url.clone() }
+                            }
                         }
-                    } }
+                    },
+                    { "id": "openText", "component": "Text", "text": "Open PR" }
                 ]
             }
         }
-    });
+    ]);
     MessageCard {
         id: uuid::Uuid::new_v4().to_string(),
         a2ui,
@@ -1171,14 +1188,38 @@ mod tests {
         assert_eq!(card.source, "webhook/github");
     }
 
+    // Find the first component of type `kind` in a v0.9 message-array payload.
+    fn find_component<'a>(a2ui: &'a serde_json::Value, kind: &str) -> &'a serde_json::Value {
+        for msg in a2ui.as_array().expect("a2ui is a message array") {
+            if let Some(comps) = msg
+                .get("updateComponents")
+                .and_then(|u| u.get("components"))
+                .and_then(|c| c.as_array())
+            {
+                for comp in comps {
+                    if comp.get("component").and_then(|c| c.as_str()) == Some(kind) {
+                        return comp;
+                    }
+                }
+            }
+        }
+        panic!("no `{kind}` component found in a2ui");
+    }
+
     #[test]
-    fn github_pr_to_card_a2ui_carries_open_pr_button() {
+    fn github_pr_to_card_a2ui_is_renderable_v09_with_open_pr_button() {
         let card = github_pr_to_card(&sample_github_payload("opened"), "webhook");
-        // The Button child's action.context.url is what the renderer dispatches.
-        let url = card.a2ui["root"]["Card"]["children"][2]["Button"]["action"]["context"]["url"]
+        // Renderable A2UI v0.9: a message array whose first message creates a
+        // surface (the {root:{Card}} shape the app can't render is gone).
+        let messages = card.a2ui.as_array().expect("a2ui is a message array");
+        assert!(messages[0].get("createSurface").is_some());
+        // The Button fires action.event with the PR url in its context.
+        let button = find_component(&card.a2ui, "Button");
+        let url = button["action"]["event"]["context"]["url"]
             .as_str()
-            .expect("Button.action.context.url present");
+            .expect("Button.action.event.context.url present");
         assert_eq!(url, "https://github.com/acme/widget/pull/42");
+        assert_eq!(button["action"]["event"]["name"].as_str(), Some("open_url"));
     }
 
     #[test]
@@ -1186,10 +1227,8 @@ mod tests {
         let mut p = sample_github_payload("opened");
         p.pull_request.body = None;
         let card = github_pr_to_card(&p, "webhook");
-        let body = card.a2ui["root"]["Card"]["children"][1]["Text"]["text"]
-            .as_str()
-            .unwrap();
-        assert_eq!(body, "(no description)");
+        let dump = serde_json::to_string(&card.a2ui).unwrap();
+        assert!(dump.contains("(no description)"), "fallback body present");
     }
 
     #[test]
