@@ -39,7 +39,7 @@ ama send \
 | `--ticket` | (必填) | 目标 inbox 的配对 ticket。从某台设备的 Flutter app 拿,或从 `ama create` 输出拷过来。 |
 | `--card-file` | (必填) | 卡片 JSON 文件路径,`-` 表示从 stdin 读 |
 | `--name` | `script` | 进入卡片 `source` 字段的兜底值(若 JSON 没显式给 source) |
-| `--relay` | n0 公共 relay | 自建 relay URL |
+| `--relay` | `relay.muveeai.com` | relay 覆盖:传 URL 用别的 relay、`n0` 回公共、`disabled` 纯直连 |
 | `--wait-secs` | 5 | 本地 push 后最多挂多久,等 gossip 把 entry 推到至少一个 peer 后再退出。看到 `SyncFinished` 事件就提前退 |
 
 退出码:`0` = 本地 push 成功(即使最终 gossip 超时,本地 entry 是写好的、下次再连上就同步);非零 = 入参不对或者节点起不来。
@@ -74,7 +74,7 @@ ama serve \
 | `--ticket` | (必填) | 目标 inbox 的 ticket;服务启动时 join 一次,整个进程生命周期复用同一个 iroh 节点 |
 | `--bind` | `127.0.0.1:8080` | TCP 监听地址。生产环境(Docker)用 `0.0.0.0:8080` |
 | `--name` | `webhook` | 卡片 `source` 兜底值 |
-| `--relay` | n0 公共 relay | 自建 relay URL |
+| `--relay` | `relay.muveeai.com` | relay 覆盖:传 URL 用别的 relay、`n0` 回公共、`disabled` 纯直连 |
 | `--token` | (无) | 内联 Bearer token。POST 路由强制校验。和 `--token-file` 互斥 |
 | `--token-file` | (无) | 从文件读 token(首行,自动 trim 空白) |
 

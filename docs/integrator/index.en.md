@@ -39,7 +39,7 @@ ama send \
 | `--ticket` | (required) | Pairing ticket of the target inbox. Get it from a device's Flutter app or from `ama create`. |
 | `--card-file` | (required) | Card JSON path, or `-` to read stdin |
 | `--name` | `script` | Fallback `source` field on the card when the JSON omits it |
-| `--relay` | n0 public | Self-hosted relay URL |
+| `--relay` | `relay.muveeai.com` | Relay override: a URL for another relay, `n0` for n0 public, or `disabled` for direct-only |
 | `--wait-secs` | 5 | Max seconds to hold the node open after the local push, giving gossip a chance to deliver the entry to at least one peer. Exits earlier on `SyncFinished` |
 
 Exit code: `0` on local push success (even if gossip eventually times out — the local entry is durable and syncs next time the node comes online); non-zero on bad input or node startup failure.
@@ -74,7 +74,7 @@ ama serve \
 | `--ticket` | (required) | Pairing ticket; joined once at startup; the same iroh node is reused for the process lifetime |
 | `--bind` | `127.0.0.1:8080` | TCP listen address. Production / Docker uses `0.0.0.0:8080` |
 | `--name` | `webhook` | Fallback `source` field on incoming cards |
-| `--relay` | n0 public | Self-hosted relay URL |
+| `--relay` | `relay.muveeai.com` | Relay override: a URL for another relay, `n0` for n0 public, or `disabled` for direct-only |
 | `--token` | (none) | Inline Bearer token. Required on POST routes. Mutually exclusive with `--token-file` |
 | `--token-file` | (none) | Path to a file containing the token (first line, trimmed) |
 
