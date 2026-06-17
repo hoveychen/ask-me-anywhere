@@ -129,7 +129,12 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS release
-        run: flutter build macos --release
+        run: |
+          # Newer Flutter auto-enables Swift Package Manager, which breaks
+          # CocoaPods-only plugins (e.g. video_player_avfoundation) with
+          # "module 'Flutter' not found". Opt out — this repo builds via CocoaPods.
+          flutter config --no-enable-swift-package-manager
+          flutter build macos --release
 
       - name: Import Developer ID certificate
         env:
