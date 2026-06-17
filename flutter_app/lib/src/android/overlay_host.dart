@@ -36,9 +36,21 @@ class OverlayHost {
     if (!await OverlayPermission.ensure()) return;
     // Start as the small draggable bubble; the overlay isolate resizes itself
     // to full-screen when a surface expands and back to bubble on collapse.
+    //
+    // showOverlay treats width/height as raw *physical px* (the plugin sets the
+    // initial LayoutParams without dpToPx), whereas resizeOverlay later runs
+    // dpToPx — so passing a bare 72 makes the first bubble ~72px (tiny on a
+    // hi-dpi screen) until the first resize. Pre-multiply by the device pixel
+    // ratio so the bubble is a full 72 *logical* px from the very first frame,
+    // matching the resizeOverlay(72,72) the collapse path uses.
+    final Iterable<FlutterView> views =
+        WidgetsBinding.instance.platformDispatcher.views;
+    final double dpr =
+        views.isNotEmpty ? views.first.devicePixelRatio : 1.0;
+    final int bubblePx = (72 * dpr).round();
     await FlutterOverlayWindow.showOverlay(
-      height: 72,
-      width: 72,
+      height: bubblePx,
+      width: bubblePx,
       alignment: OverlayAlignment.centerRight,
       flag: OverlayFlag.defaultFlag,
       enableDrag: true,
