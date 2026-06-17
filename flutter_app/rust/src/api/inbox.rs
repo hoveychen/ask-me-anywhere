@@ -25,7 +25,9 @@ use crate::frb_generated::StreamSink;
 /// app restarts.
 async fn persistent_endpoint(data_dir: &Path) -> Result<Endpoint> {
     let key = load_or_create_secret_key(&data_dir.join("node-key"))?;
-    build_endpoint(RelayChoice::N0, Some(key)).await
+    // Default to the project's self-hosted relay so paired devices reach this
+    // node via a stable, known relay rather than n0's public pool.
+    build_endpoint(RelayChoice::default_relay(), Some(key)).await
 }
 
 /// Opaque handle to a running inbox node, held by Dart between calls.

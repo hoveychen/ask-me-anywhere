@@ -59,8 +59,9 @@ enum Command {
         /// Human-readable device label (stamped into state writes).
         #[arg(long, default_value = "device")]
         name: String,
-        /// Self-hosted relay URL (e.g. https://relay.example.com). Defaults to
-        /// n0's public relays when omitted.
+        /// Relay to use. Omit for the project default (relay.muveeai.com);
+        /// pass a URL for another self-hosted relay, `n0` for n0's public pool,
+        /// or `disabled` for direct/LAN-only.
         #[arg(long)]
         relay: Option<String>,
         /// Persist the inbox store + node identity here. Omit for an ephemeral
@@ -74,7 +75,8 @@ enum Command {
         ticket: String,
         #[arg(long, default_value = "device")]
         name: String,
-        /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
+        /// Relay to use. Omit for the project default (relay.muveeai.com); pass a
+        /// URL for another relay, `n0` for n0 public, or `disabled` for direct-only.
         #[arg(long)]
         relay: Option<String>,
         /// Persist the joined inbox + node identity here so the join survives a
@@ -95,7 +97,8 @@ enum Command {
         /// `source` field wins). Also stamped onto state writes.
         #[arg(long, default_value = "script")]
         name: String,
-        /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
+        /// Relay to use. Omit for the project default (relay.muveeai.com); pass a
+        /// URL for another relay, `n0` for n0 public, or `disabled` for direct-only.
         #[arg(long)]
         relay: Option<String>,
         /// Maximum seconds to hold the node open after the local push, giving
@@ -122,7 +125,8 @@ enum Command {
         /// Default `source` stamped on incoming cards that omit it.
         #[arg(long, env = "AMA_NAME", default_value = "webhook")]
         name: String,
-        /// Self-hosted relay URL. Defaults to n0's public relays when omitted.
+        /// Relay to use. Omit for the project default (relay.muveeai.com); pass a
+        /// URL for another relay, `n0` for n0 public, or `disabled` for direct-only.
         #[arg(long, env = "AMA_RELAY")]
         relay: Option<String>,
         /// Inline bearer token required on POST routes (`/push`, `/github/pr`).

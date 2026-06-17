@@ -17,12 +17,20 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use iroh::{endpoint::presets, Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 
+/// The project's self-hosted iroh relay (deploy/relay-muvee). It's the *default*
+/// NAT-fallback relay so a paired device is reachable via a stable, known relay
+/// rather than n0's public pool — the ticket a device shares carries this relay
+/// URL. Address discovery still uses n0 (see [`build_endpoint`]); only the relay
+/// fallback changes. Override per command with `--relay <url>` / `n0` / `disabled`.
+pub const DEFAULT_RELAY: &str = "https://relay.muveeai.com";
+
 /// Which relay an inbox node should use.
 #[derive(Debug, Clone)]
 pub enum RelayChoice {
-    /// n0's production relays (the iroh default).
+    /// n0's production relays.
     N0,
-    /// A single self-hosted relay — M2's own VPS relay.
+    /// A single self-hosted relay — the project default ([`DEFAULT_RELAY`]) or
+    /// any `--relay <url>`.
     Custom(RelayUrl),
     /// No relay at all; direct connections only (works on the same LAN, fails
     /// behind symmetric NAT).
@@ -30,11 +38,27 @@ pub enum RelayChoice {
 }
 
 impl RelayChoice {
-    /// Parse a `--relay <url>` argument into a choice. An empty/absent value
-    /// means [`RelayChoice::N0`].
+    /// The project default: the self-hosted [`DEFAULT_RELAY`].
+    pub fn default_relay() -> Self {
+        // DEFAULT_RELAY is a compile-time constant we control, so a parse failure
+        // is a build-time bug, not a runtime input error — assert it.
+        RelayChoice::Custom(
+            DEFAULT_RELAY
+                .parse()
+                .expect("DEFAULT_RELAY must be a valid relay url"),
+        )
+    }
+
+    /// Resolve a `--relay <value>` argument:
+    /// - absent → [`DEFAULT_RELAY`] (self-hosted),
+    /// - `n0` → n0's public relays,
+    /// - `disabled` → no relay (direct/LAN only),
+    /// - anything else → that URL.
     pub fn from_url_opt(url: Option<&str>) -> Result<Self> {
         match url {
-            None => Ok(RelayChoice::N0),
+            None => Ok(RelayChoice::default_relay()),
+            Some(s) if s.eq_ignore_ascii_case("n0") => Ok(RelayChoice::N0),
+            Some(s) if s.eq_ignore_ascii_case("disabled") => Ok(RelayChoice::Disabled),
             Some(s) => {
                 let url: RelayUrl = s.parse().with_context(|| format!("invalid relay url: {s}"))?;
                 Ok(RelayChoice::Custom(url))
