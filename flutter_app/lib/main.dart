@@ -57,6 +57,7 @@ class AmaApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'ask-me-anywhere',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
       home: const AppGate(),
     );
