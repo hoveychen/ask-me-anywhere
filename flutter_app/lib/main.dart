@@ -17,6 +17,8 @@ import 'package:flutter_app/src/macos/assistant_views.dart';
 import 'package:flutter_app/src/macos/assistant_window.dart';
 import 'package:flutter_app/src/macos/dock_badge.dart';
 import 'package:flutter_app/src/notify/foreground_service.dart';
+import 'package:flutter_app/src/onboarding/onboarding_gate.dart';
+import 'package:flutter_app/src/onboarding/onboarding_screen.dart';
 import 'package:flutter_app/src/rust/api/inbox.dart';
 import 'package:flutter_app/src/rust/frb_generated.dart';
 import 'package:flutter_app/src/state/assistant_controller.dart';
@@ -56,8 +58,67 @@ class AmaApp extends StatelessWidget {
     return MaterialApp(
       title: 'ask-me-anywhere',
       theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
-      home: const RootShell(),
+      home: const AppGate(),
     );
+  }
+}
+
+/// First-run gate: shows the onboarding intro once (tracked by [OnboardingGate]),
+/// then hands off to [RootShell]. Mounting RootShell only after onboarding keeps
+/// the platform-specific resident-shell behaviour (macOS icon window, Android
+/// overlay) exactly as before — it just starts a beat later on first launch.
+class AppGate extends StatefulWidget {
+  const AppGate({super.key});
+
+  @override
+  State<AppGate> createState() => _AppGateState();
+}
+
+class _AppGateState extends State<AppGate> {
+  final OnboardingGate _gate = OnboardingGate();
+  // null = still checking the marker; true/false = resolved.
+  bool? _onboarded;
+
+  @override
+  void initState() {
+    super.initState();
+    _gate.isComplete().then((done) async {
+      if (!mounted) return;
+      // The resident shell reshapes this single window down to the 72² icon and
+      // macOS restores that frame on next launch — so onboarding, which renders
+      // before RootShell mounts, would otherwise inherit a tiny/leftover frame.
+      // Give it an explicit centred window first; RootShell takes over after.
+      if (!done) await _sizeForOnboarding();
+      if (mounted) setState(() => _onboarded = done);
+    });
+  }
+
+  /// macOS only: put the onboarding intro in a sensible, centred window instead
+  /// of whatever frame the OS restored from the resident icon's last state.
+  Future<void> _sizeForOnboarding() async {
+    if (!_isMacOS) return;
+    await windowManager.setResizable(true);
+    await windowManager.setMinimumSize(const Size(420, 520));
+    await windowManager.setSize(const Size(520, 640));
+    await windowManager.center();
+    await windowManager.show();
+  }
+
+  Future<void> _finishOnboarding() async {
+    await _gate.markComplete();
+    if (mounted) setState(() => _onboarded = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    switch (_onboarded) {
+      case null:
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      case false:
+        return OnboardingScreen(onDone: _finishOnboarding);
+      case true:
+        return const RootShell();
+    }
   }
 }
 
