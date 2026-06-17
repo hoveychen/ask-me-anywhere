@@ -54,7 +54,13 @@ class OverlayHost {
       alignment: OverlayAlignment.centerRight,
       flag: OverlayFlag.defaultFlag,
       enableDrag: true,
-      positionGravity: PositionGravity.auto,
+      // NOT PositionGravity.auto: auto re-snaps the window's x to the nearest
+      // edge on touch-up, which races and overrides the _moveTo(0,0) the overlay
+      // runs when expanding. Parked on the LEFT, that left over a left x-offset,
+      // so the expanded full-screen surface (and its right-aligned drawer) was
+      // shifted left (bug #2). With `none`, position is driven solely by our
+      // explicit moveOverlay resets, so expand/collapse anchor deterministically.
+      positionGravity: PositionGravity.none,
       overlayTitle: 'ask-me-anywhere',
       overlayContent: 'Assistant',
     );
