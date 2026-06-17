@@ -52,7 +52,7 @@ muveectl projects runtime-logs PROJECT_ID -f # watch the relay come up
 # 4. Verify (the relay returns an HTTP page on /):
 muveectl projects curl PROJECT_ID / -i
 
-# 5. Point an ama node at it:
+# 5. Point an ama node at it (this URL is the built-in default — see below):
 cargo run -p ama-cli -- create --name desktop \
   --relay https://relay.<base-domain>
 ```
@@ -60,6 +60,14 @@ cargo run -p ama-cli -- create --name desktop \
 The relay URL ends up as `https://<prefix>.<base-domain>` where `<prefix>` is
 the `--domain` value above. Run `muveectl projects get PROJECT_ID --json` to
 see the resolved domain after creation.
+
+`https://relay.muveeai.com` is the **default** relay baked into the clients
+(`ama_core::net::DEFAULT_RELAY`), so `ama create` / the Flutter app use it with
+no `--relay` flag. Override per command with `--relay <url>`, or fall back to
+n0's public pool with `--relay n0` (or `--relay disabled` for direct/LAN-only).
+If this relay is ever down, nodes can't mint a reachable ticket until it's
+redeployed (`muveectl projects deploy PROJECT_ID`) — or until they pass
+`--relay n0`.
 
 ## Why no `--auth-required`
 
