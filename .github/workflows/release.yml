@@ -11,9 +11,9 @@ name: Release
 #     ANDROID_KEY_ALIAS            key alias inside the keystore
 #     ANDROID_KEY_PASSWORD         key password
 #   macOS code signing
-#     MACOS_CERTIFICATE            base64 of the Developer ID Application .p12
-#     MACOS_CERTIFICATE_PWD        password for that .p12
-#     MACOS_KEYCHAIN_PASSWORD      arbitrary password for the temp keychain
+#     APPLE_CERTIFICATE            base64 of the Developer ID Application .p12
+#     APPLE_CERTIFICATE_PASSWORD        password for that .p12
+#     KEYCHAIN_PASSWORD      arbitrary password for the temp keychain
 #     APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
 #   macOS notarization (App Store Connect API key)
 #     APPLE_API_KEY                base64 of the AuthKey_XXXX.p8
@@ -133,24 +133,24 @@ jobs:
 
       - name: Import Developer ID certificate
         env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          if [ -z "$MACOS_CERTIFICATE" ]; then
-            echo "::error::MACOS_CERTIFICATE not set — cannot codesign"
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "::error::APPLE_CERTIFICATE not set — cannot codesign"
             exit 1
           fi
-          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
-          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security set-keychain-settings -lut 7200 build.keychain
           security import certificate.p12 -k build.keychain \
-            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           rm certificate.p12
           security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+            -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
 
       - name: Codesign .app (hardened runtime)
         env:
