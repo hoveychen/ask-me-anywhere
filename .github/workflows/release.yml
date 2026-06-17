@@ -1,0 +1,214 @@
+name: Release
+
+# Build, sign and publish the Flutter app (Android + macOS) on a version tag.
+#
+# Trigger: push a tag like `v1.2.3`, or run manually via the Actions tab.
+#
+# Required GitHub Secrets (reuse the same ones as the other repos):
+#   Android signing
+#     ANDROID_KEYSTORE_BASE64      base64 of the upload/release .jks keystore
+#     ANDROID_KEYSTORE_PASSWORD    keystore (store) password
+#     ANDROID_KEY_ALIAS            key alias inside the keystore
+#     ANDROID_KEY_PASSWORD         key password
+#   macOS code signing
+#     MACOS_CERTIFICATE            base64 of the Developer ID Application .p12
+#     MACOS_CERTIFICATE_PWD        password for that .p12
+#     MACOS_KEYCHAIN_PASSWORD      arbitrary password for the temp keychain
+#     APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
+#   macOS notarization (App Store Connect API key)
+#     APPLE_API_KEY                base64 of the AuthKey_XXXX.p8
+#     APPLE_API_KEY_ID             the key id (the XXXX in the filename)
+#     APPLE_API_ISSUER             the issuer UUID
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.2.3); used as the GitHub Release name"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_APP_DIR: flutter_app
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Android: signed release APK → GitHub Release
+  # ───────────────────────────────────────────────────────────────────────────
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Write release keystore + key.properties
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 not set — cannot produce a signed APK"
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          cat > android/key.properties <<EOF
+          storeFile=release.keystore
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+
+      - name: Build signed release APK
+        run: flutter build apk --release
+
+      - name: Rename APK with version tag
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk "dist/ask-me-anywhere-${TAG}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: flutter_app/dist/*.apk
+
+      - name: Publish APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: flutter_app/dist/*.apk
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # macOS: codesigned + notarized .app → DMG → GitHub Release
+  # ───────────────────────────────────────────────────────────────────────────
+  macos:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: flutter_app
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "::error::MACOS_CERTIFICATE not set — cannot codesign"
+            exit 1
+          fi
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 7200 build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          rm certificate.p12
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Codesign .app (hardened runtime)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP="build/macos/Build/Products/Release/flutter_app.app"
+          codesign --deep --force --options runtime --timestamp \
+            --entitlements macos/Runner/Release.entitlements \
+            --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+      - name: Notarize .app
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          APP="build/macos/Build/Products/Release/flutter_app.app"
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo -n "$APPLE_API_KEY" | base64 --decode -o "$API_KEY_PATH"
+          ditto -c -k --keepParent "$APP" notarize.zip
+          xcrun notarytool submit notarize.zip \
+            --key "$API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$APP"
+
+      - name: Package signed DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          APP="build/macos/Build/Products/Release/flutter_app.app"
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          DMG="ask-me-anywhere-${TAG}.dmg"
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          mkdir -p dmg-staging
+          cp -R "$APP" dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "Ask Me Anywhere" -srcfolder dmg-staging \
+            -ov -format UDZO "$DMG"
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --key "$API_KEY_PATH" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$DMG"
+          mkdir -p dist
+          mv "$DMG" dist/
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: flutter_app/dist/*.dmg
+
+      - name: Publish DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: flutter_app/dist/*.dmg
