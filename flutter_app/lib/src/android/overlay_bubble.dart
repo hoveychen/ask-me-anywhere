@@ -293,8 +293,18 @@ class _OverlayBubbleAppState extends State<OverlayBubbleApp> {
           title: Text(title),
           automaticallyImplyLeading: false,
           actions: [
+            // Jump to the full app window — same affordance the single-card
+            // panel offers; the overlay list/picker is a cramped sidecar, so
+            // give the user a way out to the real inbox (bug #3: this surface
+            // used to expose only the close button).
+            IconButton(
+              icon: const Icon(Icons.open_in_new),
+              tooltip: 'Open full inbox',
+              onPressed: () => _send(openInboxCommand()),
+            ),
             IconButton(
               icon: const Icon(Icons.close),
+              tooltip: 'Close',
               onPressed: () => _go(AssistantSurface.onCollapse),
             ),
           ],
