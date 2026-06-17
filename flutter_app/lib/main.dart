@@ -82,9 +82,26 @@ class _AppGateState extends State<AppGate> {
   @override
   void initState() {
     super.initState();
-    _gate.isComplete().then((done) {
+    _gate.isComplete().then((done) async {
+      if (!mounted) return;
+      // The resident shell reshapes this single window down to the 72² icon and
+      // macOS restores that frame on next launch — so onboarding, which renders
+      // before RootShell mounts, would otherwise inherit a tiny/leftover frame.
+      // Give it an explicit centred window first; RootShell takes over after.
+      if (!done) await _sizeForOnboarding();
       if (mounted) setState(() => _onboarded = done);
     });
+  }
+
+  /// macOS only: put the onboarding intro in a sensible, centred window instead
+  /// of whatever frame the OS restored from the resident icon's last state.
+  Future<void> _sizeForOnboarding() async {
+    if (!_isMacOS) return;
+    await windowManager.setResizable(true);
+    await windowManager.setMinimumSize(const Size(420, 520));
+    await windowManager.setSize(const Size(520, 640));
+    await windowManager.center();
+    await windowManager.show();
   }
 
   Future<void> _finishOnboarding() async {
