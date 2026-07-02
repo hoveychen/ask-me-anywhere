@@ -1,5 +1,12 @@
 # ask-me-anywhere
 
+[![Release](https://github.com/hoveychen/ask-me-anywhere/actions/workflows/release.yml/badge.svg)](https://github.com/hoveychen/ask-me-anywhere/actions/workflows/release.yml)
+[![Docs](https://github.com/hoveychen/ask-me-anywhere/actions/workflows/docs.yml/badge.svg)](https://github.com/hoveychen/ask-me-anywhere/actions/workflows/docs.yml)
+[![Latest release](https://img.shields.io/github/v/release/hoveychen/ask-me-anywhere?sort=semver)](https://github.com/hoveychen/ask-me-anywhere/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**English** · [简体中文](README.zh.md)
+
 > Multi-device actionable message-card network · global dismiss/state sync · pure P2P, no server · A2UI rendering
 
 **ask-me-anywhere** (`ama`) pushes rich, interactive notification cards to all of
@@ -233,5 +240,4 @@ now (it requires APNs, which conflicts with the zero-persistence P2P model).
 
 ## License
 
-No license file is present yet — all rights reserved by default until one is
-added. Open an issue if you'd like to use this.
+Released under the [MIT License](LICENSE) — © 2026 hoveychen.
